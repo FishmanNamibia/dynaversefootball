@@ -62,6 +62,7 @@ Current local setup in this repo uses backend port `5003` to avoid conflicts.
 - `GET /api/attendance/sessions`
 - `POST /api/attendance/sessions`
 - `POST /api/attendance/sessions/:sessionId/records`
+- `GET /api/operations/staff/payments/:paymentId/slip.pdf`
 - `GET /api/health`
 - `GET /api/health/db`
 
@@ -72,6 +73,7 @@ Current local setup in this repo uses backend port `5003` to avoid conflicts.
 - Reminder rules are seeded for before-due, due-day, and overdue messages.
 - Invoices can be viewed, downloaded as PDF, and sent by email or WhatsApp.
 - Receipt PDFs are generated from recorded payments and allocations.
+- Salary slip PDFs are generated from recorded staff payroll payments.
 - Invoice/receipt branding and payment instruction fields can be customized in `backend/.env`:
   - `ACADEMY_CONTACT_EMAIL`, `ACADEMY_CONTACT_PHONE`
   - `BANK_NAME`, `BANK_ACCOUNT_NAME`, `BANK_ACCOUNT_NUMBER`

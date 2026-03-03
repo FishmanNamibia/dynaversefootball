@@ -7,7 +7,9 @@ const state = {
   activeView: 'dashboard',
   groups: [],
   selectedPlayer: null,
-  selectedCollectionGuardianId: null
+  selectedCollectionGuardianId: null,
+  operationsStage: 'inventory',
+  operationsPayrollPeriod: new Date().toISOString().slice(0, 7)
 };
 
 function setToken(token) {
@@ -306,6 +308,7 @@ function renderShell() {
           <button data-view="billing" class="nav-btn ${state.activeView === 'billing' ? 'active' : ''}">Billing</button>
           <button data-view="attendance" class="nav-btn ${state.activeView === 'attendance' ? 'active' : ''}">Attendance</button>
           <button data-view="reminders" class="nav-btn ${state.activeView === 'reminders' ? 'active' : ''}">Reminders</button>
+          <button data-view="operations" class="nav-btn ${state.activeView === 'operations' ? 'active' : ''}">Operations</button>
           <button data-view="settings" class="nav-btn ${state.activeView === 'settings' ? 'active' : ''}">Settings</button>
         </nav>
         <div class="sidebar-footer">
@@ -362,6 +365,7 @@ function viewTitle(view) {
   if (view === 'billing') return 'Fees, Invoices, and Payments';
   if (view === 'attendance') return 'Training Attendance';
   if (view === 'reminders') return 'Payment Reminder Operations';
+  if (view === 'operations') return 'Inventory, Needs, Procurement & Staff Payments';
   if (view === 'settings') return 'System Configuration Center';
   return 'Football Academy Dashboard';
 }
@@ -372,6 +376,7 @@ function viewSubtitle(view) {
   if (view === 'billing') return 'Generate invoices/receipts, send invoice communications, and manage activity contribution fees.';
   if (view === 'attendance') return 'Create sessions and mark player attendance.';
   if (view === 'reminders') return 'Send due reminders and outstanding monthly fee notifications to parents.';
+  if (view === 'operations') return 'Control stock readiness, club needs, procurement workflow, funding, and salary payouts.';
   if (view === 'settings') return 'Manage academy setup, channels, billing defaults, reminder rules, and audit logs.';
   return 'Daily operations overview for Dynaverse Football Academy.';
 }
@@ -406,6 +411,10 @@ async function loadView() {
       await renderRemindersView(host);
       return;
     }
+    if (state.activeView === 'operations') {
+      await renderOperationsView(host);
+      return;
+    }
     if (state.activeView === 'settings') {
       await renderSettingsView(host);
       return;
@@ -417,43 +426,87 @@ async function loadView() {
 }
 
 async function renderDashboardView(host) {
-  const [playersRes, openInvoicesRes, remindersRes, sessionsRes] = await Promise.all([
-    api('/players?limit=500'),
-    api('/billing/invoices?status=open&limit=500'),
-    api('/reminders/pending?limit=500'),
-    api('/attendance/sessions?limit=30')
-  ]);
+  const [playersRes, invoicesRes, remindersRes, sessionsRes, operationsRes, fundingRes, staffPaymentsRes] =
+    await Promise.all([
+      api('/players?limit=500'),
+      api('/billing/invoices?limit=500'),
+      api('/reminders/pending?limit=500'),
+      api('/attendance/sessions?limit=30'),
+      api('/operations/dashboard'),
+      api('/operations/funding/sources?limit=500'),
+      api('/operations/staff/payments?status=all&limit=500')
+    ]);
 
   const players = playersRes.data || [];
-  const invoices = openInvoicesRes.data || [];
+  const allInvoices = invoicesRes.data || [];
   const reminders = remindersRes.data || [];
   const sessions = sessionsRes.data || [];
+  const operations = operationsRes.data || {};
+  const opMetrics = operations.metrics || {};
+  const funding = fundingRes.data || [];
+  const staffPayments = staffPaymentsRes.data || [];
 
-  const overdueCount = invoices.filter((i) => i.status === 'overdue').length;
-  const openAmount = invoices.reduce((sum, item) => sum + Number(item.total_amount || 0), 0);
+  const openInvoices = allInvoices.filter((invoice) => ['sent', 'partially_paid', 'overdue'].includes(invoice.status));
+  const overdueInvoices = allInvoices.filter((invoice) => invoice.status === 'overdue');
+
+  const totalInvoiced = allInvoices.reduce((sum, invoice) => sum + Number(invoice.total_amount || 0), 0);
+  const totalCollected = allInvoices.reduce((sum, invoice) => sum + Number(invoice.paid_amount || 0), 0);
+  const totalOutstanding = allInvoices.reduce(
+    (sum, invoice) => sum + Math.max(Number(invoice.total_amount || 0) - Number(invoice.paid_amount || 0), 0),
+    0
+  );
+  const overdueOutstanding = overdueInvoices.reduce(
+    (sum, invoice) => sum + Math.max(Number(invoice.total_amount || 0) - Number(invoice.paid_amount || 0), 0),
+    0
+  );
+  const collectionRate = totalInvoiced > 0 ? (totalCollected / totalInvoiced) * 100 : 0;
+
+  const monthKey = new Date().toISOString().slice(0, 7);
+  const monthLabel = new Date().toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  const issuedThisMonth = allInvoices
+    .filter((invoice) => String(invoice.issue_date || '').startsWith(monthKey))
+    .reduce((sum, invoice) => sum + Number(invoice.total_amount || 0), 0);
+
+  const fundingCommitted = funding.reduce((sum, source) => sum + Number(source.committedAmount || 0), 0);
+  const fundingReceived = funding.reduce((sum, source) => sum + Number(source.receivedAmount || 0), 0);
+  const fundingGap = Math.max(fundingCommitted - fundingReceived, 0);
+
+  const salaryDue = staffPayments.reduce((sum, payment) => sum + Number(payment.amountDue || 0), 0);
+  const salaryPaid = staffPayments.reduce((sum, payment) => sum + Number(payment.amountPaid || 0), 0);
+  const salaryOutstanding = staffPayments.reduce(
+    (sum, payment) => sum + Math.max(Number(payment.amountDue || 0) - Number(payment.amountPaid || 0), 0),
+    0
+  );
+  const pendingSalaries = staffPayments.filter((payment) => ['pending', 'part_paid'].includes(payment.status)).length;
 
   host.innerHTML = `
     <div class="cards four">
       <article class="card stat"><h3>${players.length}</h3><p>Active Players</p></article>
-      <article class="card stat"><h3>${invoices.length}</h3><p>Open Invoices</p></article>
-      <article class="card stat"><h3>${overdueCount}</h3><p>Overdue Invoices</p></article>
-      <article class="card stat"><h3>${formatMoney(openAmount)}</h3><p>Open Amount</p></article>
+      <article class="card stat"><h3>${openInvoices.length}</h3><p>Open Invoices</p></article>
+      <article class="card stat"><h3>${formatMoney(totalOutstanding)}</h3><p>Total Outstanding</p></article>
+      <article class="card stat"><h3>${formatMoney(totalCollected)}</h3><p>Total Collected</p></article>
+    </div>
+    <div class="cards four">
+      <article class="card stat"><h3>${formatMoney(overdueOutstanding)}</h3><p>Overdue Amount</p></article>
+      <article class="card stat"><h3>${collectionRate.toFixed(1)}%</h3><p>Collection Rate</p></article>
+      <article class="card stat"><h3>${formatMoney(salaryOutstanding)}</h3><p>Salary Outstanding</p></article>
+      <article class="card stat"><h3>${formatMoney(opMetrics.needsBudgetOpen ?? 0)}</h3><p>Needs Budget Open</p></article>
     </div>
     <div class="cards two">
       <article class="card">
-        <h3>Recent Players</h3>
+        <h3>Financial Control Snapshot</h3>
         <table>
-          <thead><tr><th>Code</th><th>Name</th><th>Group</th><th>Joined</th></tr></thead>
           <tbody>
-            ${
-              players
-                .slice(0, 8)
-                .map(
-                  (p) =>
-                    `<tr><td>${p.player_code}</td><td>${p.first_name} ${p.last_name}</td><td>${p.training_group_code || '-'}</td><td>${formatDate(p.joined_on)}</td></tr>`
-                )
-                .join('') || '<tr><td colspan="4">No players yet</td></tr>'
-            }
+            <tr><th>Total Invoiced</th><td>${formatMoney(totalInvoiced)}</td></tr>
+            <tr><th>Issued (${monthLabel})</th><td>${formatMoney(issuedThisMonth)}</td></tr>
+            <tr><th>Total Collected</th><td>${formatMoney(totalCollected)}</td></tr>
+            <tr><th>Outstanding Balance</th><td>${formatMoney(totalOutstanding)}</td></tr>
+            <tr><th>Funding Committed</th><td>${formatMoney(fundingCommitted)}</td></tr>
+            <tr><th>Funding Received</th><td>${formatMoney(fundingReceived)}</td></tr>
+            <tr><th>Funding Gap</th><td>${formatMoney(fundingGap)}</td></tr>
+            <tr><th>Payroll Due</th><td>${formatMoney(salaryDue)}</td></tr>
+            <tr><th>Payroll Paid</th><td>${formatMoney(salaryPaid)}</td></tr>
+            <tr><th>Payroll Outstanding</th><td>${formatMoney(salaryOutstanding)}</td></tr>
           </tbody>
         </table>
       </article>
@@ -462,11 +515,33 @@ async function renderDashboardView(host) {
         <ul class="queue">
           <li>Pending reminders: <strong>${reminders.length}</strong></li>
           <li>Attendance sessions tracked: <strong>${sessions.length}</strong></li>
-          <li>Open invoices: <strong>${invoices.length}</strong></li>
+          <li>Open invoices: <strong>${openInvoices.length}</strong></li>
+          <li>Overdue invoices: <strong>${overdueInvoices.length}</strong></li>
+          <li>Low stock items: <strong>${opMetrics.lowStockItems ?? 0}</strong></li>
+          <li>Open needs: <strong>${opMetrics.openNeeds ?? 0}</strong></li>
+          <li>Procurement pipeline: <strong>${opMetrics.procurementPipeline ?? 0}</strong></li>
+          <li>Pending salary payments: <strong>${pendingSalaries}</strong></li>
           <li>Next monthly billing run: <strong>1st day of month</strong></li>
         </ul>
       </article>
     </div>
+    <article class="card">
+      <h3>Recent Players</h3>
+      <table>
+        <thead><tr><th>Code</th><th>Name</th><th>Group</th><th>Joined</th></tr></thead>
+        <tbody>
+          ${
+            players
+              .slice(0, 10)
+              .map(
+                (p) =>
+                  `<tr><td>${p.player_code}</td><td>${p.first_name} ${p.last_name}</td><td>${p.training_group_code || '-'}</td><td>${formatDate(p.joined_on)}</td></tr>`
+              )
+              .join('') || '<tr><td colspan="4">No players yet</td></tr>'
+          }
+        </tbody>
+      </table>
+    </article>
   `;
 }
 
@@ -1448,6 +1523,936 @@ async function renderAttendanceView(host) {
     } catch (error) {
       notify(error.message, 'error');
     }
+  });
+}
+
+async function renderOperationsView(host) {
+  const [dashboardRes, inventoryRes, needsRes, procurementRes, fundingRes, staffRes, staffPaymentsRes] =
+    await Promise.all([
+      api('/operations/dashboard'),
+      api('/operations/inventory/items?limit=300'),
+      api('/operations/needs?status=all&limit=300'),
+      api('/operations/procurement?status=all&limit=300'),
+      api('/operations/funding/sources?limit=300'),
+      api('/operations/staff/members?limit=300'),
+      api('/operations/staff/payments?status=all&limit=300')
+    ]);
+
+  const dashboard = dashboardRes.data || {};
+  const metrics = dashboard.metrics || {};
+  const lowStock = Array.isArray(dashboard.lowStockItems) ? dashboard.lowStockItems : [];
+  const inventory = Array.isArray(inventoryRes.data) ? inventoryRes.data : [];
+  const needs = Array.isArray(needsRes.data) ? needsRes.data : [];
+  const procurement = Array.isArray(procurementRes.data) ? procurementRes.data : [];
+  const funding = Array.isArray(fundingRes.data) ? fundingRes.data : [];
+  const staffMembers = Array.isArray(staffRes.data) ? staffRes.data : [];
+  const staffPayments = Array.isArray(staffPaymentsRes.data) ? staffPaymentsRes.data : [];
+
+  const inventoryOptions = inventory
+    .map((item) => `<option value="${item.id}">${escapeHtml(`${item.itemCode} - ${item.name}`)}</option>`)
+    .join('');
+  const needsOptions = needs
+    .filter((need) => ['open', 'approved', 'sourced', 'ordered'].includes(need.status))
+    .map((need) => `<option value="${need.id}">${escapeHtml(`${need.needCode} - ${need.needName}`)}</option>`)
+    .join('');
+  const fundingOptions = funding
+    .map((source) => `<option value="${source.id}">${escapeHtml(`${source.sourceCode} - ${source.name}`)}</option>`)
+    .join('');
+  const activeStaffMembers = staffMembers.filter((member) => member.isActive !== false);
+  const currentPayrollPeriod =
+    typeof state.operationsPayrollPeriod === 'string' && /^\d{4}-\d{2}$/.test(state.operationsPayrollPeriod)
+      ? state.operationsPayrollPeriod
+      : new Date().toISOString().slice(0, 7);
+  const staffOptions = staffMembers
+    .map(
+      (member) =>
+        `<option value="${member.id}" data-rate="${Number(member.rateAmount || 0)}">${escapeHtml(`${member.staffCode} - ${member.fullName}`)}</option>`
+    )
+    .join('');
+  const lowStockRows = lowStock.length
+    ? lowStock
+        .map(
+          (item) => `<tr>
+      <td>${escapeHtml(`${item.itemCode} - ${item.name}`)}</td>
+      <td>${item.stockOnHand}</td>
+      <td>${item.minimumStockLevel}</td>
+      <td>${item.targetStockLevel}</td>
+      <td>${item.recommendedOrderQty}</td>
+    </tr>`
+        )
+        .join('')
+    : '<tr><td colspan="5">No low-stock alerts.</td></tr>';
+  const inventoryRows = inventory.length
+    ? inventory
+        .map(
+          (item) => `<tr>
+      <td>${escapeHtml(item.itemCode)}</td>
+      <td>${escapeHtml(item.name)}</td>
+      <td>${escapeHtml(item.category)}</td>
+      <td>${item.stockOnHand}</td>
+      <td>${item.minimumStockLevel}</td>
+      <td>${item.targetStockLevel}</td>
+    </tr>`
+        )
+        .join('')
+    : '<tr><td colspan="6">No inventory items.</td></tr>';
+  const needsRows = needs.length
+    ? needs
+        .map(
+          (need) => `<tr>
+      <td>${escapeHtml(`${need.needCode} - ${need.needName}`)}</td>
+      <td>${escapeHtml(need.priority)}</td>
+      <td>${escapeHtml(need.statusLabel || need.status)}</td>
+      <td>${escapeHtml(need.fundingStatusLabel || need.fundingStatus)}</td>
+      <td>${need.quantityRemaining}</td>
+      <td>${formatMoney(need.estimatedCost)}</td>
+      <td class="mini-actions">
+        <select data-need-stage="${need.id}">
+          <option value="open" ${need.status === 'open' ? 'selected' : ''}>Open</option>
+          <option value="approved" ${need.status === 'approved' ? 'selected' : ''}>Approved</option>
+          <option value="sourced" ${need.status === 'sourced' ? 'selected' : ''}>Sourced</option>
+          <option value="ordered" ${need.status === 'ordered' ? 'selected' : ''}>Ordered</option>
+          <option value="received" ${need.status === 'received' ? 'selected' : ''}>Received</option>
+          <option value="closed" ${need.status === 'closed' ? 'selected' : ''}>Closed</option>
+        </select>
+        <button class="ghost" data-need-action="set" data-need-id="${need.id}">Update</button>
+      </td>
+    </tr>`
+        )
+        .join('')
+    : '<tr><td colspan="7">No needs logged.</td></tr>';
+  const procurementRows = procurement.length
+    ? procurement
+        .map(
+          (pr) => `<tr>
+      <td>${escapeHtml(pr.prNumber)}</td>
+      <td>${escapeHtml(pr.title)}</td>
+      <td>${escapeHtml(pr.status)}</td>
+      <td>${escapeHtml(pr.supplierName || '-')}</td>
+      <td>${escapeHtml((pr.needCodes || []).join(', ') || '-')}</td>
+      <td>${formatMoney(pr.totalEstimatedAmount)}</td>
+      <td class="mini-actions">
+        <button class="ghost" data-proc-action="receive" data-proc-id="${pr.id}">Mark Delivered</button>
+      </td>
+    </tr>`
+        )
+        .join('')
+    : '<tr><td colspan="7">No procurement requests.</td></tr>';
+  const fundingRows = funding.length
+    ? funding
+        .map(
+          (source) => `<tr>
+      <td>${escapeHtml(`${source.sourceCode} - ${source.name}`)}</td>
+      <td>${escapeHtml(source.sourceType)}</td>
+      <td>${formatMoney(source.committedAmount, source.currency)}</td>
+      <td>${formatMoney(source.receivedAmount, source.currency)}</td>
+      <td>${formatMoney(source.balanceToReceive, source.currency)}</td>
+      <td class="mini-actions">
+        <button class="ghost" data-funding-action="receive" data-source-id="${source.id}">Record Receipt</button>
+      </td>
+    </tr>`
+        )
+        .join('')
+    : '<tr><td colspan="6">No funding sources.</td></tr>';
+  const periodPayments = staffPayments.filter((payment) => payment.periodMonth === currentPayrollPeriod);
+  const paymentByStaffId = new Map(periodPayments.map((payment) => [payment.staffMemberId, payment]));
+  const staffRegisterRows = activeStaffMembers.length
+    ? activeStaffMembers
+        .map(
+          (member) => `<tr>
+      <td>${escapeHtml(member.staffCode)}</td>
+      <td>${escapeHtml(member.fullName)}</td>
+      <td>${escapeHtml(member.roleTitle)}</td>
+      <td>${escapeHtml(member.rateType)}</td>
+      <td>${formatMoney(member.rateAmount)}</td>
+      <td>${escapeHtml(member.paymentMethod || '-')}</td>
+      <td><span class="status-pill ok">active</span></td>
+    </tr>`
+        )
+        .join('')
+    : '<tr><td colspan="7">No active staff members.</td></tr>';
+  const payrollMatrixRows = activeStaffMembers.length
+    ? activeStaffMembers
+        .map((member) => {
+          const entry = paymentByStaffId.get(member.id);
+          const amountDue = entry ? entry.amountDue : Number(member.rateAmount || 0);
+          const amountPaid = entry ? entry.amountPaid : 0;
+          const outstanding = Math.max(amountDue - amountPaid, 0);
+          const status = entry ? entry.status : 'not_created';
+          const statusClass = status === 'paid' ? 'ok' : status === 'part_paid' ? 'warn' : 'danger';
+          const statusText = status === 'not_created' ? 'not created' : status.replace('_', ' ');
+          const actionHtml = entry
+            ? `<button class="ghost" data-staffpay-action="slip" data-payment-id="${entry.id}">Slip PDF</button>
+               <button class="ghost" data-staffpay-action="record" data-payment-id="${entry.id}">Record Payment</button>`
+            : `<button class="ghost" data-staffpay-action="create" data-staff-id="${member.id}" data-due="${amountDue}">Create Entry</button>`;
+          return `<tr>
+      <td>${escapeHtml(member.staffCode)}</td>
+      <td>${escapeHtml(member.fullName)}</td>
+      <td>${escapeHtml(member.roleTitle)}</td>
+      <td>${formatMoney(amountDue)}</td>
+      <td>${formatMoney(amountPaid)}</td>
+      <td>${formatMoney(outstanding)}</td>
+      <td><span class="status-pill ${statusClass}">${escapeHtml(statusText)}</span></td>
+      <td class="mini-actions">${actionHtml}</td>
+    </tr>`;
+        })
+        .join('')
+    : '<tr><td colspan="8">No active staff members.</td></tr>';
+  const stageCounts = {
+    inventory: metrics.lowStockItems ?? 0,
+    needs: metrics.openNeeds ?? 0,
+    procurement: metrics.procurementPipeline ?? 0,
+    funding: funding.length,
+    payroll: activeStaffMembers.length
+  };
+  const availableStages = ['inventory', 'needs', 'procurement', 'funding', 'payroll'];
+  const currentOpsStage = availableStages.includes(state.operationsStage) ? state.operationsStage : 'inventory';
+  const stageButtons = [
+    { key: 'inventory', label: '1. Inventory' },
+    { key: 'needs', label: '2. Needs' },
+    { key: 'procurement', label: '3. Procurement' },
+    { key: 'funding', label: '4. Funding' },
+    { key: 'payroll', label: '5. Payroll' }
+  ]
+    .map(
+      (stage) => `<button class="ops-stage-btn ${currentOpsStage === stage.key ? 'active' : ''}" data-ops-stage="${stage.key}">
+        <span>${stage.label}</span>
+        <strong>${stageCounts[stage.key] ?? 0}</strong>
+      </button>`
+    )
+    .join('');
+
+  host.innerHTML = `
+    <div class="cards four">
+      <article class="card stat"><h3>${metrics.lowStockItems ?? 0}</h3><p>Low Stock Items</p></article>
+      <article class="card stat"><h3>${metrics.openNeeds ?? 0}</h3><p>Open Needs</p></article>
+      <article class="card stat"><h3>${metrics.procurementPipeline ?? 0}</h3><p>Procurement Pipeline</p></article>
+      <article class="card stat"><h3>${formatMoney(metrics.salaryOutstanding ?? 0)}</h3><p>Salary Outstanding</p></article>
+    </div>
+
+    <article class="card">
+      <h3>Operations Workflow</h3>
+      <p class="ops-note">Work by stage to keep operations clean and avoid mixed forms.</p>
+      <div class="ops-stage-nav">${stageButtons}</div>
+    </article>
+
+    <section class="ops-panel ${currentOpsStage === 'inventory' ? 'active' : ''}" data-ops-panel="inventory">
+      <article class="card operations-readiness">
+        <div class="section-head">
+          <h3>Readiness & Reorder Signals</h3>
+          <button id="autoNeedsBtn">Auto-Create Needs from Stock Gaps</button>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Item</th><th>Stock</th><th>Minimum</th><th>Target</th><th>Recommended Order</th></tr></thead>
+            <tbody>${lowStockRows}</tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card">
+        <h3>Inventory Control</h3>
+        <div class="operations-dual">
+          <section class="operations-pane">
+            <h4>Create Inventory Item</h4>
+            <form id="createInventoryForm" class="stack">
+              <label>Item Name<input name="name" required /></label>
+              <label>Category
+                <select name="category">
+                  <option value="equipment">Equipment</option>
+                  <option value="kits">Kits</option>
+                  <option value="facilities">Facilities</option>
+                  <option value="services">Services</option>
+                  <option value="salaries">Salaries</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>Unit<input name="unit" value="pcs" /></label>
+              <label>Stock On Hand<input name="stockOnHand" type="number" min="0" step="0.01" value="0" /></label>
+              <label>Minimum Stock<input name="minimumStockLevel" type="number" min="0" step="0.01" value="0" /></label>
+              <label>Target Stock<input name="targetStockLevel" type="number" min="0" step="0.01" value="0" /></label>
+              <label>Reorder Qty<input name="reorderQuantity" type="number" min="0" step="0.01" value="0" /></label>
+              <button type="submit">Create Item</button>
+            </form>
+          </section>
+
+          <section class="operations-pane">
+            <h4>Record Stock Movement</h4>
+            <form id="recordStockMovementForm" class="stack">
+              <label>Inventory Item
+                <select name="inventoryItemId" required>
+                  ${inventoryOptions || '<option value="">No inventory items</option>'}
+                </select>
+              </label>
+              <label>Movement Type
+                <select name="movementType">
+                  <option value="in">Stock In</option>
+                  <option value="out">Stock Out</option>
+                  <option value="adjustment">Adjustment (+)</option>
+                  <option value="donation">Donation In</option>
+                </select>
+              </label>
+              <label>Quantity<input name="quantity" type="number" min="0.01" step="0.01" required /></label>
+              <label>Unit Cost (optional)<input name="unitCost" type="number" min="0" step="0.01" /></label>
+              <label>Movement Date<input name="movementDate" type="date" /></label>
+              <label>Reference Type<input name="referenceType" placeholder="procurement/donation/manual" /></label>
+              <label>Reference ID<input name="referenceId" /></label>
+              <label>Notes<input name="notes" /></label>
+              <button type="submit">Record Movement</button>
+            </form>
+          </section>
+        </div>
+
+        <section class="operations-table-block">
+          <div class="section-head">
+            <h4>Inventory Register</h4>
+            <small>${inventory.length} item(s)</small>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Code</th><th>Name</th><th>Category</th><th>Stock</th><th>Min</th><th>Target</th></tr></thead>
+              <tbody>${inventoryRows}</tbody>
+            </table>
+          </div>
+        </section>
+      </article>
+    </section>
+
+    <section class="ops-panel ${currentOpsStage === 'needs' ? 'active' : ''}" data-ops-panel="needs">
+      <article class="card">
+        <h3>Club Needs Register</h3>
+        <p class="ops-note">Create and progress needs by stage so procurement can track accurately.</p>
+        <div class="operations-dual">
+          <section class="operations-pane">
+            <h4>Create Need</h4>
+            <form id="createNeedForm" class="stack">
+              <label>Need Name<input name="needName" required /></label>
+              <label>Category
+                <select name="category">
+                  <option value="equipment">Equipment</option>
+                  <option value="kits">Kits</option>
+                  <option value="facilities">Facilities</option>
+                  <option value="services">Services</option>
+                  <option value="salaries">Salaries</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>Need Stage
+                <select name="status">
+                  <option value="open">Open</option>
+                  <option value="approved">Approved</option>
+                  <option value="sourced">Sourced</option>
+                  <option value="ordered">Ordered</option>
+                  <option value="received">Received</option>
+                  <option value="closed">Closed</option>
+                </select>
+              </label>
+              <label>Funding Stage
+                <select name="fundingStatus">
+                  <option value="unfunded">Unfunded</option>
+                  <option value="partially_funded">Partially Funded</option>
+                  <option value="fully_funded">Fully Funded</option>
+                </select>
+              </label>
+              <label>Linked Inventory Item
+                <select name="inventoryItemId">
+                  <option value="">None</option>
+                  ${inventoryOptions}
+                </select>
+              </label>
+              <label>Quantity Needed<input name="quantityNeeded" type="number" min="0.01" step="0.01" value="1" required /></label>
+              <label>Priority
+                <select name="priority">
+                  <option value="critical">Critical</option>
+                  <option value="high">High</option>
+                  <option value="medium" selected>Medium</option>
+                  <option value="low">Low</option>
+                </select>
+              </label>
+              <label>Required By<input name="requiredBy" type="date" /></label>
+              <label>Estimated Cost<input name="estimatedCost" type="number" min="0" step="0.01" value="0" /></label>
+              <label>Owner<input name="ownerName" placeholder="Logistics / Admin" /></label>
+              <label>Justification<input name="justification" /></label>
+              <button type="submit">Add Need</button>
+            </form>
+          </section>
+
+          <section class="operations-table-block">
+            <div class="section-head">
+              <h4>Needs Register</h4>
+              <small>${needs.length} record(s)</small>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Need</th><th>Priority</th><th>Status</th><th>Funding</th><th>Qty Remaining</th><th>Estimate</th><th>Actions</th></tr></thead>
+                <tbody>${needsRows}</tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </article>
+    </section>
+
+    <section class="ops-panel ${currentOpsStage === 'procurement' ? 'active' : ''}" data-ops-panel="procurement">
+      <article class="card">
+        <h3>Procurement Pipeline</h3>
+        <p class="ops-note">Create requests and link one or more needs to move requests through the pipeline.</p>
+        <div class="operations-dual">
+          <section class="operations-pane">
+            <h4>Create Procurement Request</h4>
+            <form id="createProcurementForm" class="stack">
+              <label>Title<input name="title" required /></label>
+              <label>Supplier<input name="supplierName" /></label>
+              <label>Estimated Total<input name="totalEstimatedAmount" type="number" min="0" step="0.01" value="0" /></label>
+              <label>Expected Delivery<input name="expectedDeliveryDate" type="date" /></label>
+              <label>Funding Source
+                <select name="fundingSourceId">
+                  <option value="">None</option>
+                  ${fundingOptions}
+                </select>
+              </label>
+              <label>Procurement Stage
+                <select name="status">
+                  <option value="draft">Draft</option>
+                  <option value="submitted">Submitted</option>
+                  <option value="approved">Approved</option>
+                  <option value="ordered">Ordered</option>
+                </select>
+              </label>
+              <label>Linked Needs (select one or more)
+                <select name="needIds" multiple size="6">${needsOptions || '<option value="" disabled>No open needs</option>'}</select>
+              </label>
+              <button type="submit">Create Procurement Request</button>
+            </form>
+          </section>
+
+          <section class="operations-table-block">
+            <div class="section-head">
+              <h4>Procurement Register</h4>
+              <small>${procurement.length} request(s)</small>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>PR</th><th>Title</th><th>Status</th><th>Supplier</th><th>Need(s)</th><th>Total</th><th>Actions</th></tr></thead>
+                <tbody>${procurementRows}</tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </article>
+    </section>
+
+    <section class="ops-panel ${currentOpsStage === 'funding' ? 'active' : ''}" data-ops-panel="funding">
+      <article class="card">
+        <h3>Funding Sources</h3>
+        <p class="ops-note">Manage donor and sponsor commitments, then record incoming receipts.</p>
+        <div class="operations-dual">
+          <section class="operations-pane">
+            <h4>Create Funding Source</h4>
+            <form id="createFundingSourceForm" class="stack">
+              <label>Source Name<input name="name" required /></label>
+              <label>Type
+                <select name="sourceType">
+                  <option value="donor">Donor</option>
+                  <option value="sponsor">Sponsor</option>
+                  <option value="internal">Internal</option>
+                  <option value="parent_contribution">Parent Contribution</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>Committed Amount<input name="committedAmount" type="number" min="0" step="0.01" value="0" /></label>
+              <label>Received Amount<input name="receivedAmount" type="number" min="0" step="0.01" value="0" /></label>
+              <label>Email<input name="email" type="email" /></label>
+              <label>Phone<input name="phone" /></label>
+              <button type="submit">Create Funding Source</button>
+            </form>
+          </section>
+
+          <section class="operations-table-block">
+            <div class="section-head">
+              <h4>Funding Register</h4>
+              <small>${funding.length} source(s)</small>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Source</th><th>Type</th><th>Committed</th><th>Received</th><th>Balance</th><th>Actions</th></tr></thead>
+                <tbody>${fundingRows}</tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </article>
+    </section>
+
+    <section class="ops-panel ${currentOpsStage === 'payroll' ? 'active' : ''}" data-ops-panel="payroll">
+      <article class="card">
+        <h3>Staff & Payroll</h3>
+        <p class="ops-note">Staff are registered once here, then payroll is tracked per month from the same staff list.</p>
+        <div class="toolbar">
+          <label class="inline-field">Payroll Period
+            <input id="opsPayrollPeriod" type="month" value="${currentPayrollPeriod}" />
+          </label>
+          <button id="reloadPayrollPeriodBtn" class="ghost">Load Period</button>
+        </div>
+        <div class="operations-dual">
+          <section class="operations-pane">
+            <h4>Create Staff Member</h4>
+            <form id="createStaffMemberForm" class="stack">
+              <label>Staff Full Name<input name="fullName" required /></label>
+              <label>Role<input name="roleTitle" required /></label>
+              <label>Rate Type
+                <select name="rateType">
+                  <option value="monthly">Monthly</option>
+                  <option value="session">Per Session</option>
+                  <option value="hourly">Hourly</option>
+                </select>
+              </label>
+              <label>Rate Amount<input name="rateAmount" type="number" min="0" step="0.01" value="0" /></label>
+              <button type="submit">Create Staff Member</button>
+            </form>
+          </section>
+
+          <section class="operations-pane">
+            <h4>Create / Update Payroll Entry</h4>
+            <form id="createStaffPaymentForm" class="stack">
+              <label>Staff Member
+                <select name="staffMemberId" required>
+                  ${staffOptions || '<option value="">No staff members</option>'}
+                </select>
+              </label>
+              <label>Period Month (YYYY-MM)<input name="periodMonth" value="${currentPayrollPeriod}" placeholder="2026-03" required /></label>
+              <label>Amount Due<input name="amountDue" type="number" min="0.01" step="0.01" required /></label>
+              <label>Amount Paid<input name="amountPaid" type="number" min="0" step="0.01" value="0" /></label>
+              <label>Funding Source
+                <select name="fundingSourceId">
+                  <option value="">None</option>
+                  ${fundingOptions}
+                </select>
+              </label>
+              <button type="submit">Create / Update Payroll Entry</button>
+            </form>
+          </section>
+        </div>
+
+        <section class="operations-table-block">
+          <div class="section-head">
+            <h4>Staff Register</h4>
+            <small>${activeStaffMembers.length} active staff</small>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Code</th><th>Name</th><th>Role</th><th>Rate Type</th><th>Base Rate</th><th>Method</th><th>Status</th></tr></thead>
+              <tbody>${staffRegisterRows}</tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="operations-table-block">
+          <div class="section-head">
+            <h4>Payroll Tracker (${currentPayrollPeriod})</h4>
+            <small>${periodPayments.length} existing payroll record(s)</small>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Code</th><th>Staff</th><th>Role</th><th>Due</th><th>Paid</th><th>Outstanding</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody>${payrollMatrixRows}</tbody>
+            </table>
+          </div>
+        </section>
+      </article>
+    </section>
+  `;
+
+  const setOpsStage = (stageKey) => {
+    if (!availableStages.includes(stageKey)) {
+      return;
+    }
+    state.operationsStage = stageKey;
+    host.querySelectorAll('[data-ops-stage]').forEach((button) => {
+      button.classList.toggle('active', button.getAttribute('data-ops-stage') === stageKey);
+    });
+    host.querySelectorAll('[data-ops-panel]').forEach((panel) => {
+      panel.classList.toggle('active', panel.getAttribute('data-ops-panel') === stageKey);
+    });
+  };
+
+  host.querySelectorAll('[data-ops-stage]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const stageKey = button.getAttribute('data-ops-stage');
+      if (stageKey) {
+        setOpsStage(stageKey);
+      }
+    });
+  });
+
+  setOpsStage(currentOpsStage);
+
+  const payrollPeriodInput = host.querySelector('#opsPayrollPeriod');
+  const reloadPayrollPeriodBtn = host.querySelector('#reloadPayrollPeriodBtn');
+  const applyPayrollPeriod = async () => {
+    if (!(payrollPeriodInput instanceof HTMLInputElement)) {
+      return;
+    }
+    const periodValue = String(payrollPeriodInput.value || '').trim();
+    if (!/^\d{4}-\d{2}$/.test(periodValue)) {
+      notify('Invalid payroll period. Use YYYY-MM.', 'error');
+      return;
+    }
+    state.operationsPayrollPeriod = periodValue;
+    state.operationsStage = 'payroll';
+    await loadView();
+  };
+  reloadPayrollPeriodBtn?.addEventListener('click', async (event) => {
+    event.preventDefault();
+    await applyPayrollPeriod();
+  });
+  payrollPeriodInput?.addEventListener('change', async () => {
+    await applyPayrollPeriod();
+  });
+
+  document.querySelector('#autoNeedsBtn')?.addEventListener('click', async () => {
+    try {
+      state.operationsStage = 'inventory';
+      const res = await api('/operations/inventory/auto-needs', { method: 'POST', body: {} });
+      notify(`Auto need generation complete. Created: ${res.data.created}, Skipped: ${res.data.skipped}`, 'success');
+      await loadView();
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+  });
+
+  document.querySelector('#createInventoryForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const fd = new FormData(event.currentTarget);
+    try {
+      state.operationsStage = 'inventory';
+      await api('/operations/inventory/items', {
+        method: 'POST',
+        body: {
+          name: String(fd.get('name') || ''),
+          category: String(fd.get('category') || 'equipment'),
+          unit: String(fd.get('unit') || 'units'),
+          stockOnHand: Number(fd.get('stockOnHand') || 0),
+          minimumStockLevel: Number(fd.get('minimumStockLevel') || 0),
+          targetStockLevel: Number(fd.get('targetStockLevel') || 0),
+          reorderQuantity: Number(fd.get('reorderQuantity') || 0)
+        }
+      });
+      notify('Inventory item created.', 'success');
+      await loadView();
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+  });
+
+  document.querySelector('#recordStockMovementForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const fd = new FormData(event.currentTarget);
+    try {
+      state.operationsStage = 'inventory';
+      const res = await api('/operations/inventory/movements', {
+        method: 'POST',
+        body: {
+          inventoryItemId: String(fd.get('inventoryItemId') || ''),
+          movementType: String(fd.get('movementType') || 'in'),
+          quantity: Number(fd.get('quantity') || 0),
+          unitCost: optionalNumber(fd, 'unitCost'),
+          movementDate: optionalText(fd, 'movementDate'),
+          referenceType: optionalText(fd, 'referenceType'),
+          referenceId: optionalText(fd, 'referenceId'),
+          notes: optionalText(fd, 'notes')
+        }
+      });
+      notify(`Stock movement recorded. New stock: ${res.data.newStockOnHand}`, 'success');
+      await loadView();
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+  });
+
+  document.querySelector('#createNeedForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const fd = new FormData(event.currentTarget);
+    try {
+      state.operationsStage = 'needs';
+      await api('/operations/needs', {
+        method: 'POST',
+        body: {
+          needName: String(fd.get('needName') || ''),
+          category: String(fd.get('category') || 'equipment'),
+          status: String(fd.get('status') || 'open'),
+          fundingStatus: String(fd.get('fundingStatus') || 'unfunded'),
+          inventoryItemId: optionalText(fd, 'inventoryItemId'),
+          quantityNeeded: Number(fd.get('quantityNeeded') || 1),
+          priority: String(fd.get('priority') || 'medium'),
+          requiredBy: optionalText(fd, 'requiredBy'),
+          estimatedCost: Number(fd.get('estimatedCost') || 0),
+          ownerName: optionalText(fd, 'ownerName'),
+          justification: optionalText(fd, 'justification')
+        }
+      });
+      notify('Need created.', 'success');
+      await loadView();
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+  });
+
+  document.querySelectorAll('[data-need-action]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const needId = button.dataset.needId;
+      const action = button.dataset.needAction;
+      if (!needId) return;
+      let status = 'open';
+      if (action === 'set') {
+        const stageSelect = host.querySelector(`[data-need-stage="${needId}"]`);
+        status = stageSelect instanceof HTMLSelectElement ? stageSelect.value : 'open';
+      }
+      try {
+        state.operationsStage = 'needs';
+        await api(`/operations/needs/${needId}`, {
+          method: 'PATCH',
+          body: { status }
+        });
+        notify(`Need moved to ${status}.`, 'success');
+        await loadView();
+      } catch (error) {
+        notify(error.message, 'error');
+      }
+    });
+  });
+
+  document.querySelector('#createProcurementForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const fd = new FormData(form);
+    const selectedNeeds = Array.from(form.querySelectorAll('select[name="needIds"] option:checked')).map(
+      (option) => option.value
+    );
+    try {
+      state.operationsStage = 'procurement';
+      await api('/operations/procurement', {
+        method: 'POST',
+        body: {
+          title: String(fd.get('title') || ''),
+          supplierName: optionalText(fd, 'supplierName'),
+          totalEstimatedAmount: Number(fd.get('totalEstimatedAmount') || 0),
+          expectedDeliveryDate: optionalText(fd, 'expectedDeliveryDate'),
+          fundingSourceId: optionalText(fd, 'fundingSourceId'),
+          status: String(fd.get('status') || 'draft'),
+          needIds: selectedNeeds
+        }
+      });
+      notify('Procurement request created.', 'success');
+      await loadView();
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+  });
+
+  document.querySelectorAll('[data-proc-action="receive"]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const requestId = button.dataset.procId;
+      if (!requestId) return;
+      try {
+        state.operationsStage = 'procurement';
+        const res = await api(`/operations/procurement/${requestId}/receive`, {
+          method: 'POST',
+          body: {}
+        });
+        notify(
+          `Procurement received. Stock updates: ${res.data.stockMovements}, Needs closed: ${res.data.needsClosed}`,
+          'success'
+        );
+        await loadView();
+      } catch (error) {
+        notify(error.message, 'error');
+      }
+    });
+  });
+
+  document.querySelector('#createFundingSourceForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const fd = new FormData(event.currentTarget);
+    try {
+      state.operationsStage = 'funding';
+      await api('/operations/funding/sources', {
+        method: 'POST',
+        body: {
+          name: String(fd.get('name') || ''),
+          sourceType: String(fd.get('sourceType') || 'donor'),
+          committedAmount: Number(fd.get('committedAmount') || 0),
+          receivedAmount: Number(fd.get('receivedAmount') || 0),
+          email: optionalText(fd, 'email'),
+          phone: optionalText(fd, 'phone')
+        }
+      });
+      notify('Funding source created.', 'success');
+      await loadView();
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+  });
+
+  document.querySelectorAll('[data-funding-action="receive"]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const sourceId = button.dataset.sourceId;
+      if (!sourceId) return;
+      const amountInput = window.prompt('Amount received');
+      const amount = Number(amountInput);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        notify('Invalid amount.', 'error');
+        return;
+      }
+      try {
+        state.operationsStage = 'funding';
+        await api(`/operations/funding/sources/${sourceId}/receive`, {
+          method: 'POST',
+          body: { amount }
+        });
+        notify('Funding receipt recorded.', 'success');
+        await loadView();
+      } catch (error) {
+        notify(error.message, 'error');
+      }
+    });
+  });
+
+  document.querySelector('#createStaffMemberForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const fd = new FormData(event.currentTarget);
+    try {
+      state.operationsStage = 'payroll';
+      await api('/operations/staff/members', {
+        method: 'POST',
+        body: {
+          fullName: String(fd.get('fullName') || ''),
+          roleTitle: String(fd.get('roleTitle') || ''),
+          rateType: String(fd.get('rateType') || 'monthly'),
+          rateAmount: Number(fd.get('rateAmount') || 0)
+        }
+      });
+      notify('Staff member created.', 'success');
+      await loadView();
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+  });
+
+  const createPayrollForm = host.querySelector('#createStaffPaymentForm');
+  const payrollStaffSelect = createPayrollForm?.querySelector('select[name="staffMemberId"]');
+  const payrollDueInput = createPayrollForm?.querySelector('input[name="amountDue"]');
+  const syncPayrollDueFromStaff = () => {
+    if (!(payrollStaffSelect instanceof HTMLSelectElement) || !(payrollDueInput instanceof HTMLInputElement)) {
+      return;
+    }
+    const selectedOption = payrollStaffSelect.selectedOptions[0];
+    const suggestedRate = Number(selectedOption?.getAttribute('data-rate') || 0);
+    const currentDue = Number(payrollDueInput.value || 0);
+    if (!Number.isFinite(suggestedRate) || suggestedRate <= 0) {
+      return;
+    }
+    if (!currentDue || currentDue <= 0) {
+      payrollDueInput.value = suggestedRate.toFixed(2);
+    }
+  };
+  payrollStaffSelect?.addEventListener('change', syncPayrollDueFromStaff);
+  syncPayrollDueFromStaff();
+
+  document.querySelector('#createStaffPaymentForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const fd = new FormData(event.currentTarget);
+    const periodMonth = String(fd.get('periodMonth') || '');
+    const amountPaid = Number(fd.get('amountPaid') || 0);
+    try {
+      state.operationsStage = 'payroll';
+      if (/^\d{4}-\d{2}$/.test(periodMonth)) {
+        state.operationsPayrollPeriod = periodMonth;
+      }
+      const res = await api('/operations/staff/payments', {
+        method: 'POST',
+        body: {
+          staffMemberId: String(fd.get('staffMemberId') || ''),
+          periodMonth,
+          amountDue: Number(fd.get('amountDue') || 0),
+          amountPaid,
+          fundingSourceId: optionalText(fd, 'fundingSourceId')
+        }
+      });
+      if (amountPaid > 0 && res?.data?.id) {
+        await downloadProtectedFile(
+          `/operations/staff/payments/${res.data.id}/slip.pdf`,
+          `salary-slip-${res.data.id}.pdf`
+        );
+        notify('Payroll entry saved and salary slip downloaded.', 'success');
+      } else {
+        notify('Payroll entry saved.', 'success');
+      }
+      await loadView();
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+  });
+
+  document.querySelectorAll('[data-staffpay-action]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const action = button.dataset.staffpayAction;
+      try {
+        state.operationsStage = 'payroll';
+        if (action === 'create') {
+          const staffId = button.dataset.staffId;
+          if (!staffId) return;
+          const dueDefault = Number(button.dataset.due || 0);
+          const dueInput = window.prompt('Amount due', dueDefault > 0 ? dueDefault.toFixed(2) : '');
+          const amountDue = Number(dueInput);
+          if (!Number.isFinite(amountDue) || amountDue <= 0) {
+            notify('Invalid due amount.', 'error');
+            return;
+          }
+          await api('/operations/staff/payments', {
+            method: 'POST',
+            body: {
+              staffMemberId: staffId,
+              periodMonth: currentPayrollPeriod,
+              amountDue,
+              amountPaid: 0
+            }
+          });
+          state.operationsPayrollPeriod = currentPayrollPeriod;
+          notify('Payroll entry created.', 'success');
+        } else if (action === 'slip') {
+          const paymentId = button.dataset.paymentId;
+          if (!paymentId) return;
+          await downloadProtectedFile(
+            `/operations/staff/payments/${paymentId}/slip.pdf`,
+            `salary-slip-${paymentId}.pdf`
+          );
+          notify('Salary slip downloaded.', 'success');
+        } else {
+          const paymentId = button.dataset.paymentId;
+          if (!paymentId) return;
+          const amountInput = window.prompt('Payment amount');
+          const amount = Number(amountInput);
+          if (!Number.isFinite(amount) || amount <= 0) {
+            notify('Invalid amount.', 'error');
+            return;
+          }
+          const res = await api(`/operations/staff/payments/${paymentId}/record`, {
+            method: 'POST',
+            body: { amount }
+          });
+          const resolvedPaymentId = res?.data?.paymentId || paymentId;
+          await downloadProtectedFile(
+            `/operations/staff/payments/${resolvedPaymentId}/slip.pdf`,
+            `salary-slip-${resolvedPaymentId}.pdf`
+          );
+          notify('Staff payment recorded and salary slip downloaded.', 'success');
+        }
+        await loadView();
+      } catch (error) {
+        notify(error.message, 'error');
+      }
+    });
   });
 }
 

@@ -11,6 +11,7 @@ import { attendanceRouter } from './modules/attendance/attendance.routes.js';
 import { playersRouter } from './modules/players/players.routes.js';
 import { catalogRouter } from './modules/catalog/catalog.routes.js';
 import { settingsRouter } from './modules/settings/settings.routes.js';
+import { operationsRouter } from './modules/operations/operations.routes.js';
 import { requireAuth } from './middleware/auth.js';
 import { notFound } from './middleware/notFound.js';
 import { errorHandler } from './middleware/errorHandler.js';
@@ -34,6 +35,7 @@ export function createApp() {
   app.use('/api/players', playersRouter);
   app.use('/api/catalog', catalogRouter);
   app.use('/api/settings', settingsRouter);
+  app.use('/api/operations', operationsRouter);
 
   app.use(notFound);
   app.use(errorHandler);

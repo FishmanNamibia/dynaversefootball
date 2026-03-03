@@ -28,7 +28,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -155,7 +156,8 @@ code {
 }
 
 input,
-select {
+select,
+textarea {
   padding: 10px 11px;
   border: 1px solid #cad5ca;
   border-radius: 10px;
@@ -334,6 +336,125 @@ button.ghost:hover {
   flex-wrap: wrap;
 }
 
+.ops-note {
+  margin: 0 0 10px;
+  color: var(--muted);
+}
+
+.ops-stage-nav {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.ops-stage-btn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  background: #eff5ef;
+  color: #23412f;
+  border: 1px solid #c8d8cb;
+  padding: 9px 10px;
+}
+
+.ops-stage-btn:hover {
+  background: #e3eee6;
+  color: #23412f;
+}
+
+.ops-stage-btn strong {
+  min-width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: #dceadf;
+  border: 1px solid #b7cbbd;
+  font-size: 0.78rem;
+  display: grid;
+  place-items: center;
+}
+
+.ops-stage-btn.active {
+  background: #e1f2e7;
+  border-color: #99ccac;
+  color: #114f2c;
+}
+
+.ops-stage-btn.active:hover {
+  background: #d2ebdb;
+  color: #114f2c;
+}
+
+.ops-stage-btn.active strong {
+  background: #0c7a46;
+  border-color: #0c7a46;
+  color: #fff;
+}
+
+.ops-panel {
+  display: none;
+  gap: 12px;
+}
+
+.ops-panel.active {
+  display: grid;
+}
+
+.operations-readiness .section-head {
+  margin-bottom: 2px;
+}
+
+.operations-dual {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.operations-pane,
+.operations-table-block {
+  border: 1px solid #dbe5dc;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.operations-pane {
+  background: var(--panel-soft);
+}
+
+.operations-pane h4,
+.operations-table-block h4 {
+  margin: 0 0 8px;
+}
+
+.operations-table-block {
+  background: #fff;
+}
+
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.section-head small {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.table-scroll table {
+  min-width: 640px;
+}
+
 .inline-field {
   display: grid;
   gap: 4px;
@@ -439,6 +560,11 @@ button.ghost:hover {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.mini-actions select {
+  padding: 5px 7px;
+  min-width: 120px;
 }
 
 .mini-actions button {

@@ -297,6 +297,137 @@ CREATE TABLE office_notes (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE inventory_items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  item_code TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'equipment',
+  description TEXT,
+  unit TEXT NOT NULL DEFAULT 'units',
+  stock_on_hand NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  minimum_stock_level NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  target_stock_level NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  reorder_quantity NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE stock_movements (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  inventory_item_id UUID NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
+  movement_type TEXT NOT NULL, -- in, out, adjustment, donation
+  quantity NUMERIC(12, 2) NOT NULL,
+  unit_cost NUMERIC(12, 2),
+  total_cost NUMERIC(12, 2),
+  movement_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  reference_type TEXT,
+  reference_id TEXT,
+  notes TEXT,
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE funding_sources (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_code TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'donor', -- donor, sponsor, internal, parent_contribution, other
+  contact_name TEXT,
+  phone TEXT,
+  email TEXT,
+  committed_amount NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  received_amount NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  currency CHAR(3) NOT NULL DEFAULT 'NAD',
+  notes TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE club_needs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  need_code TEXT NOT NULL UNIQUE,
+  category TEXT NOT NULL, -- equipment, kits, facilities, services, salaries, other
+  need_name TEXT NOT NULL,
+  description TEXT,
+  quantity_needed NUMERIC(12, 2) NOT NULL DEFAULT 1,
+  quantity_fulfilled NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  priority TEXT NOT NULL DEFAULT 'medium', -- critical, high, medium, low
+  required_by DATE,
+  estimated_cost NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  justification TEXT,
+  status TEXT NOT NULL DEFAULT 'open', -- open, approved, sourced, ordered, received, closed
+  funding_status TEXT NOT NULL DEFAULT 'unfunded', -- unfunded, partially_funded, fully_funded
+  funding_source_id UUID REFERENCES funding_sources(id) ON DELETE SET NULL,
+  owner_name TEXT,
+  inventory_item_id UUID REFERENCES inventory_items(id) ON DELETE SET NULL,
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE procurement_requests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pr_number TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  requested_by TEXT,
+  approved_by TEXT,
+  supplier_name TEXT,
+  quote_reference TEXT,
+  budget_line TEXT,
+  funding_source_id UUID REFERENCES funding_sources(id) ON DELETE SET NULL,
+  expected_delivery_date DATE,
+  total_estimated_amount NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'draft', -- draft, submitted, approved, ordered, delivered, closed, cancelled
+  notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE procurement_request_needs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  procurement_request_id UUID NOT NULL REFERENCES procurement_requests(id) ON DELETE CASCADE,
+  need_id UUID NOT NULL REFERENCES club_needs(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(procurement_request_id, need_id)
+);
+
+CREATE TABLE staff_members (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  staff_code TEXT NOT NULL UNIQUE,
+  full_name TEXT NOT NULL,
+  role_title TEXT NOT NULL,
+  rate_type TEXT NOT NULL, -- monthly, session, hourly
+  rate_amount NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  payment_method TEXT NOT NULL DEFAULT 'eft',
+  contract_start DATE,
+  contract_end DATE,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE staff_payments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  staff_member_id UUID NOT NULL REFERENCES staff_members(id) ON DELETE CASCADE,
+  period_month TEXT NOT NULL, -- YYYY-MM
+  amount_due NUMERIC(12, 2) NOT NULL,
+  amount_paid NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  currency CHAR(3) NOT NULL DEFAULT 'NAD',
+  payment_date DATE,
+  payment_reference TEXT,
+  proof_url TEXT,
+  funding_source_id UUID REFERENCES funding_sources(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'pending', -- pending, part_paid, paid
+  notes TEXT,
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(staff_member_id, period_month)
+);
+
 CREATE TABLE system_settings (
   key TEXT PRIMARY KEY,
   value JSONB NOT NULL,
@@ -327,6 +458,11 @@ CREATE INDEX idx_guardian_contact_notes_guardian_created_at ON guardian_contact_
 CREATE INDEX idx_attendance_records_player ON attendance_records(player_id);
 CREATE INDEX idx_enrollments_player_status ON enrollments(player_id, status);
 CREATE INDEX idx_system_audit_logs_created_at ON system_audit_logs(created_at DESC);
+CREATE INDEX idx_inventory_items_stock ON inventory_items(stock_on_hand, minimum_stock_level);
+CREATE INDEX idx_stock_movements_item_date ON stock_movements(inventory_item_id, movement_date DESC);
+CREATE INDEX idx_club_needs_status_priority ON club_needs(status, priority, required_by);
+CREATE INDEX idx_procurement_requests_status ON procurement_requests(status, expected_delivery_date);
+CREATE INDEX idx_staff_payments_period_status ON staff_payments(period_month, status);
 
 -- Baseline fee plans from your registration form.
 INSERT INTO fee_plans (code, name, amount, currency, billing_frequency)
@@ -342,6 +478,10 @@ VALUES
   ('Invoice reminder on due date', 'on_due', 0, 'email', 'invoice_due_today'),
   ('Invoice reminder 3 days overdue', 'overdue', 3, 'email', 'invoice_overdue_3d')
 ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO funding_sources (source_code, name, source_type, committed_amount, received_amount, currency)
+VALUES ('FUND-CORE', 'Core Academy Fund', 'internal', 0, 0, 'NAD')
+ON CONFLICT (source_code) DO NOTHING;
 
 INSERT INTO system_settings (key, value, updated_by)
 VALUES

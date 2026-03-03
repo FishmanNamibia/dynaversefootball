@@ -4,22 +4,17 @@ import { fileURLToPath } from 'node:url';
 import PDFDocument from 'pdfkit';
 
 const COLORS = {
-  green900: '#083620',
-  green800: '#0c4a2e',
-  green700: '#11613c',
-  gold500: '#c9a54c',
-  slate900: '#1c2320',
-  slate700: '#4e5d57',
-  slate500: '#6f7e76',
-  surface: '#f9fbf8',
-  surfaceAlt: '#f1f6f2',
-  surfaceHeader: '#e7f0e8',
-  border: '#ccdbcf',
-  borderSoft: '#dde8df',
-  white: '#ffffff',
-  danger: '#b0302f',
-  warning: '#b1711b',
-  success: '#1f7a3d'
+  navy900: '#0f2550',
+  navy700: '#1f3f76',
+  gold500: '#be9131',
+  gold600: '#ad842b',
+  green700: '#8eaa93',
+  green800: '#2c613f',
+  gray900: '#1e2530',
+  gray700: '#4b5666',
+  border: '#d6dce4',
+  panel: '#f2f4f8',
+  white: '#ffffff'
 } as const;
 
 const __filename = fileURLToPath(import.meta.url);
@@ -80,11 +75,6 @@ export type ReceiptDocumentData = {
   contactPhone: string;
 };
 
-type KeyValueRow = {
-  label: string;
-  value: string;
-};
-
 function resolveLogoPath(): string | null {
   const candidates = [
     path.resolve(__dirname, '../../../../logo/logo.png'),
@@ -99,25 +89,9 @@ function resolveLogoPath(): string | null {
   return null;
 }
 
-function money(amount: number, currency: string): string {
-  return `${currency} ${amount.toFixed(2)}`;
-}
-
-function formatLongDate(input: string): string {
-  const date = new Date(input);
-  if (Number.isNaN(date.getTime())) {
-    return input;
-  }
-  return date.toLocaleDateString('en-GB', {
-    day: '2-digit',
-    month: 'long',
-    year: 'numeric'
-  });
-}
-
 function renderPdf(build: (doc: PDFKit.PDFDocument) => void): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: 40, size: 'A4' });
+    const doc = new PDFDocument({ margin: 36, size: 'A4' });
     const chunks: Buffer[] = [];
     doc.on('data', (chunk: Buffer) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -127,741 +101,446 @@ function renderPdf(build: (doc: PDFKit.PDFDocument) => void): Promise<Buffer> {
   });
 }
 
-function statusColor(status: string): string {
-  const normalized = status.toLowerCase();
-  if (normalized === 'paid') {
-    return COLORS.success;
+function money(amount: number, currency: string): string {
+  return `${currency} ${amount.toFixed(2)}`;
+}
+
+function longDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
   }
-  if (normalized === 'overdue') {
-    return COLORS.warning;
-  }
-  if (normalized === 'partial' || normalized === 'partially_paid') {
-    return '#2e7d8d';
-  }
-  if (normalized === 'unpaid' || normalized === 'sent') {
-    return COLORS.danger;
-  }
-  return COLORS.green800;
+  return date.toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'long',
+    year: 'numeric'
+  });
 }
 
-function ensureSpace(doc: PDFKit.PDFDocument, heightNeeded: number): void {
-  const pageBottom = doc.page.height - doc.page.margins.bottom;
-  if (doc.y + heightNeeded <= pageBottom) {
-    return;
-  }
-  doc.addPage();
-  doc.y = doc.page.margins.top;
-}
-
-function pageLayout(doc: PDFKit.PDFDocument): { left: number; right: number; width: number } {
-  const left = doc.page.margins.left;
-  const right = doc.page.width - doc.page.margins.right;
-  return {
-    left,
-    right,
-    width: right - left
-  };
-}
-
-function drawHeaderMetaRow(
-  doc: PDFKit.PDFDocument,
-  x: number,
-  y: number,
-  width: number,
-  label: string,
-  value: string
-): void {
-  const labelWidth = 82;
-  doc.fillColor('#d8e7dc').font('Helvetica-Bold').fontSize(8).text(label, x, y, { width: labelWidth });
-  doc
-    .fillColor(COLORS.white)
-    .font('Helvetica')
-    .fontSize(9)
-    .text(value, x + labelWidth, y, {
-      width: Math.max(width - labelWidth, 40),
-      align: 'right'
-    });
-}
-
-function drawBrandHeader(
-  doc: PDFKit.PDFDocument,
-  options: {
-    academyName: string;
-    subtitle: string;
-    documentTitle: string;
-    documentNumberLabel: string;
-    documentNumber: string;
-    issueDateLabel: string;
-    issueDate: string;
-    dueDateLabel?: string;
-    dueDate?: string;
-    status: string;
-  }
-): void {
-  const { left, width } = pageLayout(doc);
-  const top = doc.y;
-  const headerHeight = 124;
-  ensureSpace(doc, headerHeight + 10);
-
-  doc.save();
-  doc.roundedRect(left, top, width, headerHeight, 12).fill(COLORS.green900);
-  doc.rect(left, top + headerHeight - 40, width, 40).fill(COLORS.green700);
-  doc.restore();
-
-  const logoX = left + 14;
-  const logoY = top + 14;
-  const logoSize = 76;
-  if (LOGO_PATH) {
-    try {
-      doc.image(LOGO_PATH, logoX, logoY, { fit: [logoSize, logoSize], align: 'center', valign: 'center' });
-    } catch {
-      // If the image cannot render, continue with text-only header.
-    }
-  }
-
-  const textStart = LOGO_PATH ? logoX + logoSize + 14 : left + 18;
-  const rightPanelWidth = 210;
-  const rightPanelX = left + width - rightPanelWidth - 16;
-  const centerTextWidth = Math.max(rightPanelX - textStart - 18, 145);
-  const academyTitleSize = options.academyName.length > 25 ? 17 : 20;
-  const academyTitleY = top + 18;
-
-  doc.font('Helvetica-Bold').fontSize(academyTitleSize);
-  const academyTitleHeight = doc.heightOfString(options.academyName, { width: centerTextWidth });
-
-  doc
-    .fillColor(COLORS.white)
-    .font('Helvetica-Bold')
-    .fontSize(academyTitleSize)
-    .text(options.academyName, textStart, academyTitleY, { width: centerTextWidth });
-
-  const subtitleY = academyTitleY + academyTitleHeight + 4;
-  doc
-    .fillColor('#d7e8dd')
-    .font('Helvetica')
-    .fontSize(10)
-    .text(options.subtitle, textStart, subtitleY, { width: centerTextWidth });
-
-  doc
-    .fillColor('#f6d890')
-    .font('Helvetica-Bold')
-    .fontSize(28)
-    .text(options.documentTitle, rightPanelX, top + 18, { width: rightPanelWidth, align: 'right' });
-
-  const metaWidth = rightPanelWidth;
-  const metaX = rightPanelX;
-  let metaY = top + 62;
-  drawHeaderMetaRow(doc, metaX, metaY, metaWidth, options.documentNumberLabel, options.documentNumber);
-  metaY += 14;
-  drawHeaderMetaRow(doc, metaX, metaY, metaWidth, options.issueDateLabel, formatLongDate(options.issueDate));
-  if (options.dueDateLabel && options.dueDate) {
-    metaY += 14;
-    drawHeaderMetaRow(doc, metaX, metaY, metaWidth, options.dueDateLabel, formatLongDate(options.dueDate));
-  }
-
-  const statusText = options.status.toUpperCase();
-  const statusWidth = Math.max(doc.widthOfString(statusText) + 24, 82);
-  const statusX = left + width - statusWidth - 16;
-  const statusY = top + 95;
-  doc.save();
-  doc.roundedRect(statusX, statusY, statusWidth, 20, 10).fill(statusColor(options.status));
-  doc.restore();
-  doc
-    .fillColor(COLORS.white)
-    .font('Helvetica-Bold')
-    .fontSize(9)
-    .text(statusText, statusX, statusY + 6, { width: statusWidth, align: 'center' });
-
-  doc.y = top + headerHeight + 12;
-}
-
-function drawSectionTitle(doc: PDFKit.PDFDocument, title: string): void {
-  const { left, right } = pageLayout(doc);
-  doc.fillColor(COLORS.green900).font('Helvetica-Bold').fontSize(11).text(title, left, doc.y);
-  const lineY = doc.y + 2;
-  doc
-    .save()
-    .moveTo(left, lineY)
-    .lineTo(right, lineY)
-    .strokeColor(COLORS.gold500)
-    .lineWidth(1)
-    .stroke()
-    .restore();
-  doc.moveDown(0.5);
-}
-
-function drawDetailCard(doc: PDFKit.PDFDocument, title: string, rows: KeyValueRow[]): void {
-  const { left, width } = pageLayout(doc);
-  const horizontalPadding = 14;
-  const labelWidth = 145;
-  const valueWidth = width - horizontalPadding * 2 - labelWidth - 10;
-  const rowGap = 8;
-
-  doc.font('Helvetica').fontSize(10);
-  const rowHeights = rows.map((row) => {
-    const value = row.value.trim().length > 0 ? row.value : '-';
-    const labelHeight = doc.heightOfString(row.label, { width: labelWidth });
-    const valueHeight = doc.heightOfString(value, { width: valueWidth });
-    return Math.max(labelHeight, valueHeight, 13);
-  });
-
-  const rowsHeight = rowHeights.reduce((sum, rowHeight) => sum + rowHeight, 0) + rowGap * Math.max(rows.length - 1, 0);
-  const cardHeight = 42 + rowsHeight + 14;
-  ensureSpace(doc, cardHeight + 8);
-
-  const top = doc.y;
-  doc.save();
-  doc.roundedRect(left, top, width, cardHeight, 10).fillAndStroke(COLORS.surface, COLORS.border);
-  doc.rect(left, top, width, 30).fill(COLORS.surfaceHeader);
-  doc.restore();
-
-  doc.fillColor(COLORS.green900).font('Helvetica-Bold').fontSize(10).text(title, left + horizontalPadding, top + 10);
-
-  let rowY = top + 40;
-  rows.forEach((row, index) => {
-    if (index > 0) {
-      doc
-        .save()
-        .moveTo(left + horizontalPadding, rowY - 5)
-        .lineTo(left + width - horizontalPadding, rowY - 5)
-        .strokeColor(COLORS.borderSoft)
-        .lineWidth(1)
-        .stroke()
-        .restore();
-    }
-    const value = row.value.trim().length > 0 ? row.value : '-';
-    doc.fillColor(COLORS.slate500).font('Helvetica-Bold').fontSize(8).text(row.label.toUpperCase(), left + horizontalPadding, rowY, {
-      width: labelWidth
-    });
-    doc.fillColor(COLORS.slate900).font('Helvetica').fontSize(10).text(value, left + horizontalPadding + labelWidth + 10, rowY, {
-      width: valueWidth
-    });
-    rowY += rowHeights[index] + rowGap;
-  });
-
-  doc.y = top + cardHeight + 10;
-}
-
-function drawInvoiceItemsTable(
-  doc: PDFKit.PDFDocument,
-  currency: string,
-  items: LineItem[],
-  subtotalAmount: number,
-  totalAmount: number
-): void {
-  const { left, width } = pageLayout(doc);
-  const qtyWidth = 54;
-  const unitWidth = 100;
-  const amountWidth = 112;
-  const descriptionWidth = width - qtyWidth - unitWidth - amountWidth;
-
-  doc.font('Helvetica').fontSize(9);
-  const normalizedRows = items.map((item) => {
-    const period =
-      item.periodStart && item.periodEnd
-        ? `Coverage: ${formatLongDate(item.periodStart)} - ${formatLongDate(item.periodEnd)}`
-        : null;
-    const description = period ? `${item.description}\n${period}` : item.description;
-    const rowHeight = Math.max(doc.heightOfString(description, { width: descriptionWidth - 12 }) + 10, 24);
-    return {
-      description,
-      quantity: item.quantity,
-      unitAmount: item.unitAmount,
-      lineTotal: item.lineTotal,
-      rowHeight
-    };
-  });
-
-  const rowsHeight = normalizedRows.reduce((sum, row) => sum + row.rowHeight, 0);
-  const tableHeight = 26 + rowsHeight;
-  const totalsHeight = 60;
-  ensureSpace(doc, 34 + tableHeight + totalsHeight);
-
-  drawSectionTitle(doc, 'INVOICE ITEMS');
-  const tableTop = doc.y;
-
-  doc.save();
-  doc.rect(left, tableTop, width, 26).fill(COLORS.green800);
-  doc.restore();
-  doc.fillColor(COLORS.white).font('Helvetica-Bold').fontSize(9).text('Description', left + 8, tableTop + 8, {
-    width: descriptionWidth - 12
-  });
-  doc.fillColor(COLORS.white).text('Qty', left + descriptionWidth, tableTop + 8, { width: qtyWidth, align: 'center' });
-  doc.fillColor(COLORS.white).text(`Unit (${currency})`, left + descriptionWidth + qtyWidth, tableTop + 8, {
-    width: unitWidth,
-    align: 'right'
-  });
-  doc.fillColor(COLORS.white).text(`Amount (${currency})`, left + descriptionWidth + qtyWidth + unitWidth, tableTop + 8, {
-    width: amountWidth - 8,
-    align: 'right'
-  });
-
-  let cursorY = tableTop + 26;
-  normalizedRows.forEach((row, index) => {
-    if (index % 2 === 1) {
-      doc.save();
-      doc.rect(left, cursorY, width, row.rowHeight).fill(COLORS.surfaceAlt);
-      doc.restore();
-    }
-
-    doc.fillColor(COLORS.slate900).font('Helvetica').fontSize(9).text(row.description, left + 8, cursorY + 6, {
-      width: descriptionWidth - 12
-    });
-    doc
-      .fillColor(COLORS.slate900)
-      .text(String(row.quantity), left + descriptionWidth, cursorY + 6, { width: qtyWidth, align: 'center' });
-    doc.fillColor(COLORS.slate900).text(row.unitAmount.toFixed(2), left + descriptionWidth + qtyWidth, cursorY + 6, {
-      width: unitWidth - 6,
-      align: 'right'
-    });
-    doc.fillColor(COLORS.slate900).text(row.lineTotal.toFixed(2), left + descriptionWidth + qtyWidth + unitWidth, cursorY + 6, {
-      width: amountWidth - 8,
-      align: 'right'
-    });
-
-    doc
-      .save()
-      .moveTo(left, cursorY + row.rowHeight)
-      .lineTo(left + width, cursorY + row.rowHeight)
-      .strokeColor(COLORS.borderSoft)
-      .lineWidth(1)
-      .stroke()
-      .restore();
-
-    cursorY += row.rowHeight;
-  });
-
-  doc.save();
-  doc.rect(left, tableTop, width, tableHeight).strokeColor(COLORS.border).lineWidth(1).stroke();
-  doc
-    .moveTo(left + descriptionWidth, tableTop)
-    .lineTo(left + descriptionWidth, tableTop + tableHeight)
-    .strokeColor(COLORS.border)
-    .lineWidth(1)
-    .stroke();
-  doc
-    .moveTo(left + descriptionWidth + qtyWidth, tableTop)
-    .lineTo(left + descriptionWidth + qtyWidth, tableTop + tableHeight)
-    .strokeColor(COLORS.border)
-    .lineWidth(1)
-    .stroke();
-  doc
-    .moveTo(left + descriptionWidth + qtyWidth + unitWidth, tableTop)
-    .lineTo(left + descriptionWidth + qtyWidth + unitWidth, tableTop + tableHeight)
-    .strokeColor(COLORS.border)
-    .lineWidth(1)
-    .stroke();
-  doc.restore();
-
-  const totalsTop = cursorY + 8;
-  const totalsWidth = 220;
-  const totalsX = left + width - totalsWidth;
-  doc.save();
-  doc.roundedRect(totalsX, totalsTop, totalsWidth, totalsHeight, 8).fillAndStroke(COLORS.surface, COLORS.border);
-  doc.restore();
-  doc.fillColor(COLORS.slate700).font('Helvetica-Bold').fontSize(9).text('Subtotal', totalsX + 12, totalsTop + 12, {
-    width: 90
-  });
-  doc
-    .fillColor(COLORS.slate900)
-    .font('Helvetica')
-    .fontSize(10)
-    .text(subtotalAmount.toFixed(2), totalsX + 95, totalsTop + 12, { width: 110, align: 'right' });
-
-  doc
-    .save()
-    .moveTo(totalsX + 12, totalsTop + 30)
-    .lineTo(totalsX + totalsWidth - 12, totalsTop + 30)
-    .strokeColor(COLORS.borderSoft)
-    .lineWidth(1)
-    .stroke()
-    .restore();
-
-  doc.fillColor(COLORS.green900).font('Helvetica-Bold').fontSize(10).text('TOTAL DUE', totalsX + 12, totalsTop + 38, {
-    width: 90
-  });
-  doc
-    .fillColor(COLORS.green900)
-    .font('Helvetica-Bold')
-    .fontSize(12)
-    .text(money(totalAmount, currency), totalsX + 95, totalsTop + 36, {
-      width: 110,
-      align: 'right'
-    });
-
-  doc.y = totalsTop + totalsHeight + 10;
-}
-
-function drawFooterBand(doc: PDFKit.PDFDocument, text: string): void {
-  const { left, width } = pageLayout(doc);
-  ensureSpace(doc, 30);
-  const top = doc.y;
-  doc.save();
-  doc.roundedRect(left, top, width, 24, 8).fill(COLORS.surfaceHeader);
-  doc.restore();
-  doc.fillColor(COLORS.slate700).font('Helvetica').fontSize(9).text(text, left + 10, top + 8, {
-    width: width - 20,
-    align: 'center'
-  });
-  doc.y = top + 30;
-}
-
-function cleanInvoiceText(value: string | null | undefined, fallback = '-'): string {
+function clean(value: string | null | undefined, fallback = '-'): string {
   const normalized = (value ?? '').replace(/\s+/g, ' ').trim();
   return normalized.length > 0 ? normalized : fallback;
 }
 
-function drawTemplateLeftArtwork(
-  doc: PDFKit.PDFDocument,
-  pageLeft: number,
-  pageTop: number,
-  stripWidth: number,
-  stripHeight: number
-): void {
-  doc.save();
-  doc.rect(pageLeft, pageTop, stripWidth, stripHeight).fill('#f6f9f5');
-  doc.fillOpacity(0.22).fillColor('#d6e4d2').rect(pageLeft + Math.max(stripWidth * 0.36, 2), pageTop + 16, Math.max(stripWidth * 0.28, 2), stripHeight - 32).fill();
-  doc.restore();
+function statusFill(status: string): string {
+  const normalized = status.toLowerCase();
+  if (normalized === 'paid') return COLORS.green800;
+  if (normalized === 'part_paid' || normalized === 'partial') return COLORS.gold600;
+  if (normalized === 'overdue') return COLORS.gold600;
+  return '#b33a36';
 }
 
-function drawTemplateBottomWaves(
-  doc: PDFKit.PDFDocument,
-  pageLeft: number,
-  pageRight: number,
-  pageBottom: number
-): void {
-  const width = pageRight - pageLeft;
-  const waveBase = pageBottom - 78;
-
-  doc.save();
-  doc
-    .moveTo(pageLeft - 4, waveBase + 28)
-    .bezierCurveTo(pageLeft + width * 0.18, waveBase - 34, pageLeft + width * 0.38, waveBase + 56, pageLeft + width * 0.6, waveBase + 20)
-    .bezierCurveTo(pageLeft + width * 0.78, waveBase - 4, pageRight + 6, waveBase + 34, pageRight + 6, waveBase + 34)
-    .lineTo(pageRight + 6, pageBottom + 8)
-    .lineTo(pageLeft - 4, pageBottom + 8)
-    .closePath()
-    .fill('#4ab2de');
-
-  doc
-    .moveTo(pageLeft - 4, waveBase + 20)
-    .bezierCurveTo(pageLeft + width * 0.2, waveBase - 44, pageLeft + width * 0.4, waveBase + 44, pageLeft + width * 0.64, waveBase + 8)
-    .bezierCurveTo(pageLeft + width * 0.8, waveBase - 14, pageRight + 6, waveBase + 26, pageRight + 6, waveBase + 26)
-    .lineTo(pageRight + 6, pageBottom + 8)
-    .lineTo(pageLeft - 4, pageBottom + 8)
-    .closePath()
-    .fill('#1f7ec6');
-
-  doc
-    .moveTo(pageLeft - 4, waveBase + 14)
-    .bezierCurveTo(pageLeft + width * 0.24, waveBase - 52, pageLeft + width * 0.45, waveBase + 38, pageLeft + width * 0.68, waveBase)
-    .bezierCurveTo(pageLeft + width * 0.85, waveBase - 20, pageRight + 6, waveBase + 18, pageRight + 6, waveBase + 18)
-    .lineTo(pageRight + 6, pageBottom + 8)
-    .lineTo(pageLeft - 4, pageBottom + 8)
-    .closePath()
-    .fill('#2b62ab');
-  doc.restore();
+function pageBounds(doc: PDFKit.PDFDocument): { left: number; right: number; top: number; width: number } {
+  const left = doc.page.margins.left;
+  const right = doc.page.width - doc.page.margins.right;
+  const top = doc.page.margins.top;
+  return { left, right, top, width: right - left };
 }
 
-function drawTemplateInvoice(doc: PDFKit.PDFDocument, data: InvoiceDocumentData): void {
-  const pageInset = 10;
-  const left = pageInset;
-  const right = doc.page.width - pageInset;
-  const width = right - left;
-  const top = pageInset;
-  const bottom = doc.page.height - pageInset;
-  const pageHeight = bottom - top;
-
-  doc.save();
-  doc.rect(left, top, width, pageHeight).fill('#fbfcfd');
-  doc.restore();
-
-  const stripWidth = 0;
-  const stripHeight = 0;
-  if (stripWidth > 0 && stripHeight > 0) {
-    drawTemplateLeftArtwork(doc, left, top, stripWidth, stripHeight);
-  }
-
-  const contentLeft = left + 14;
-  const contentWidth = right - contentLeft - 10;
-  const headerTop = top + 14;
-  const logoSize = 56;
-  const rightHeaderWidth = 182;
-  const leftHeaderWidth = contentWidth - rightHeaderWidth - 18;
+function drawCommonHeader(
+  doc: PDFKit.PDFDocument,
+  params: { academyName: string; subtitle: string; title: string; accent: string }
+): number {
+  const { left, right, top, width } = pageBounds(doc);
+  const logoSize = 76;
 
   if (LOGO_PATH) {
     try {
-      doc.image(LOGO_PATH, contentLeft, headerTop + 4, {
-        fit: [logoSize, logoSize],
-        align: 'center',
-        valign: 'center'
-      });
+      doc.image(LOGO_PATH, left, top + 2, { fit: [logoSize, logoSize] });
     } catch {
-      // Continue with text if logo draw fails.
+      // Keep rendering without logo if image fails.
     }
   }
 
-  const textStart = LOGO_PATH ? contentLeft + logoSize + 10 : contentLeft;
-  const invoiceTitleX = contentLeft + contentWidth - rightHeaderWidth;
-  doc
-    .fillColor('#1d4d83')
-    .font('Helvetica-Bold')
-    .fontSize(44)
-    .text('INVOICE', invoiceTitleX, headerTop + 2, {
-      width: rightHeaderWidth,
-      align: 'right',
-      lineBreak: false
-    });
+  const textX = left + logoSize + 12;
+  const textW = width - logoSize - 210;
+  const academyFontSize = params.academyName.length > 22 ? 18 : 22;
+  const headingY = top + 14;
+
+  doc.font('Helvetica-Bold').fontSize(academyFontSize);
+  const academyNameHeight = doc.heightOfString(params.academyName, { width: textW });
 
   doc
-    .fillColor('#0f2f57')
+    .fillColor(COLORS.navy900)
     .font('Helvetica-Bold')
-    .fontSize(11.5)
-    .text(data.academyName, textStart, headerTop + 8, {
-      width: leftHeaderWidth
-    });
-  doc.fillColor('#384d66').font('Helvetica').fontSize(8.2).text(data.academyDivisionLine, textStart, headerTop + 24, {
-    width: leftHeaderWidth
-  });
+    .fontSize(academyFontSize)
+    .text(params.academyName, textX, headingY, { width: textW });
+
+  const subtitleY = headingY + academyNameHeight + 2;
+  doc.font('Helvetica').fontSize(8.8);
+  const subtitleHeight = doc.heightOfString(params.subtitle, { width: textW });
+
   doc
-    .fillColor('#384d66')
+    .fillColor(COLORS.gray700)
     .font('Helvetica')
-    .fontSize(8.2)
-    .text('Building Character - Developing Talent - Future Professionals', textStart, headerTop + 36, {
-      width: leftHeaderWidth
-    });
+    .fontSize(8.8)
+    .text(params.subtitle, textX, subtitleY, { width: textW });
 
-  const infoTop = headerTop + 86;
-  const colGap = 12;
-  const col1Width = 124;
-  const col2Width = 126;
-  const col3Width = contentWidth - col1Width - col2Width - colGap * 2;
-  const col1X = contentLeft;
-  const col2X = col1X + col1Width + colGap;
-  const col3X = col2X + col2Width + colGap;
-  const metaLabelWidth = 82;
-  const metaValueWidth = col3Width - metaLabelWidth;
-
-  const statusText = data.status.toUpperCase();
-  const statusW = Math.max(doc.widthOfString(statusText) + 22, 92);
-  const statusX = contentLeft + contentWidth - statusW - 2;
-  const statusY = infoTop + 62;
-  doc.save();
-  doc.roundedRect(statusX, statusY, statusW, 18, 9).fill(statusColor(data.status));
-  doc.restore();
   doc
+    .fillColor(COLORS.navy900)
+    .font('Helvetica-Bold')
+    .fontSize(22)
+    .text(params.title, right - 190, top + 18, { width: 190, align: 'right' });
+
+  const contentBottom = Math.max(top + logoSize + 2, subtitleY + subtitleHeight);
+  const dividerY = contentBottom + 8;
+  doc
+    .save()
+    .moveTo(left, dividerY)
+    .lineTo(right, dividerY)
+    .lineWidth(3)
+    .strokeColor(params.accent)
+    .stroke()
+    .restore();
+
+  return dividerY + 12;
+}
+
+function drawMetaText(doc: PDFKit.PDFDocument, x: number, y: number, label: string, value: string): void {
+  doc
+    .fillColor(COLORS.gray900)
+    .font('Helvetica-Bold')
+    .fontSize(10)
+    .text(`${label}:`, x, y)
+    .font('Helvetica')
+    .text(value, x + 74, y);
+}
+
+function drawStatusPill(
+  doc: PDFKit.PDFDocument,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  text: string,
+  fillColor: string
+): void {
+  doc
+    .save()
+    .roundedRect(x, y, width, height, 9)
+    .fillAndStroke(fillColor, fillColor)
+    .restore()
     .fillColor(COLORS.white)
     .font('Helvetica-Bold')
-    .fontSize(8.5)
-    .text(statusText, statusX, statusY + 5, { width: statusW, align: 'center' });
+    .fontSize(11)
+    .text(text.toUpperCase(), x, y + 8, { width, align: 'center' });
+}
 
-  doc.fillColor('#1f5e9a').font('Helvetica-Bold').fontSize(8.5).text('BILL TO', col1X, infoTop);
-  doc.fillColor('#0f2338').font('Helvetica-Bold').fontSize(8.5).text(cleanInvoiceText(data.guardianName), col1X, infoTop + 12, { width: col1Width });
-  doc.fillColor('#1c2f43').font('Helvetica').fontSize(8).text(cleanInvoiceText(data.guardianContact), col1X, infoTop + 24, { width: col1Width });
-
-  doc.fillColor('#1f5e9a').font('Helvetica-Bold').fontSize(8.5).text('SHIP TO', col2X, infoTop);
-  doc.fillColor('#0f2338').font('Helvetica-Bold').fontSize(8.5).text(data.playerName, col2X, infoTop + 12, { width: col2Width });
-  doc.fillColor('#1c2f43').font('Helvetica').fontSize(8).text(`Player ID: ${data.playerCode}`, col2X, infoTop + 24, { width: col2Width });
-  doc.fillColor('#1c2f43').font('Helvetica').fontSize(8).text(data.academyName, col2X, infoTop + 36, { width: col2Width });
-
-  const metaRows = [
-    { label: 'INVOICE #', value: data.invoiceNumber },
-    { label: 'INVOICE DATE', value: formatLongDate(data.issueDate) },
-    { label: 'P.O.#', value: data.playerCode },
-    { label: 'DUE DATE', value: formatLongDate(data.dueDate) }
-  ];
-  let metaY = infoTop;
-  metaRows.forEach((row) => {
-    doc.fillColor('#1f5e9a').font('Helvetica-Bold').fontSize(8).text(row.label, col3X, metaY, {
-      width: metaLabelWidth
-    });
-    doc.fillColor('#0f2338').font('Helvetica-Bold').fontSize(8).text(row.value, col3X + metaLabelWidth, metaY, {
-      width: metaValueWidth,
-      align: 'right'
-    });
-    metaY += 16;
-  });
-
-  const tableTop = infoTop + 96;
-  const qtyWidth = 44;
-  const unitWidth = 94;
-  const amountWidth = 94;
-  const descWidth = contentWidth - qtyWidth - unitWidth - amountWidth;
-
+function drawSoftCardHeader(
+  doc: PDFKit.PDFDocument,
+  x: number,
+  y: number,
+  w: number,
+  title: string,
+  tint: string = COLORS.panel
+): void {
   doc
     .save()
-    .moveTo(contentLeft, tableTop - 2)
-    .lineTo(contentLeft + contentWidth, tableTop - 2)
-    .strokeColor('#91aecb')
-    .lineWidth(0.8)
-    .stroke()
-    .restore();
-  doc
-    .fillColor('#1f5e9a')
+    .roundedRect(x, y, w, 32, 8)
+    .fillAndStroke(tint, COLORS.border)
+    .restore()
+    .fillColor(COLORS.navy900)
     .font('Helvetica-Bold')
-    .fontSize(8)
-    .text('QTY', contentLeft + 2, tableTop + 2, { width: qtyWidth - 4, align: 'center' });
-  doc.fillColor('#1f5e9a').text('DESCRIPTION', contentLeft + qtyWidth + 4, tableTop + 2, {
-    width: descWidth - 8
+    .fontSize(11)
+    .text(title, x + 12, y + 10);
+}
+
+function drawInvoiceTemplate(doc: PDFKit.PDFDocument, data: InvoiceDocumentData): void {
+  const { left, right, width } = pageBounds(doc);
+  const headerBottom = drawCommonHeader(doc, {
+    academyName: data.academyName,
+    subtitle: data.academyDivisionLine,
+    title: 'INVOICE',
+    accent: COLORS.gold500
   });
-  doc.fillColor('#1f5e9a').text('UNIT PRICE', contentLeft + qtyWidth + descWidth, tableTop + 2, {
-    width: unitWidth - 8,
-    align: 'right'
-  });
-  doc.fillColor('#1f5e9a').text('AMOUNT', contentLeft + qtyWidth + descWidth + unitWidth, tableTop + 2, {
-    width: amountWidth - 2,
-    align: 'right'
-  });
+
+  const metaTop = headerBottom + 8;
+  drawMetaText(doc, left, metaTop, 'Invoice Number', data.invoiceNumber);
+  drawMetaText(doc, left, metaTop + 23, 'Invoice Date', `${longDate(data.issueDate)} • ${longDate(data.dueDate)}`);
+
+  drawStatusPill(doc, right - 148, metaTop - 4, 142, 30, data.status, statusFill(data.status));
+
+  const ornateY = metaTop + 54;
   doc
     .save()
-    .moveTo(contentLeft, tableTop + 14)
-    .lineTo(contentLeft + contentWidth, tableTop + 14)
-    .strokeColor('#91aecb')
-    .lineWidth(0.8)
+    .moveTo(left, ornateY)
+    .lineTo(right, ornateY)
+    .lineWidth(1)
+    .strokeColor(COLORS.border)
     .stroke()
+    .circle((left + right) / 2, ornateY, 4)
+    .fill(COLORS.gold500)
     .restore();
 
-  let rowY = tableTop + 18;
-  const rowHeight = 16;
-  const maxRowsBottom = bottom - 248;
-  const renderableItems: LineItem[] = [];
-  for (const item of data.items) {
-    if (rowY + rowHeight > maxRowsBottom) {
-      break;
-    }
-    renderableItems.push(item);
-    rowY += rowHeight;
-  }
-  const truncated = data.items.length > renderableItems.length;
-  rowY = tableTop + 18;
-  renderableItems.forEach((item, idx) => {
-    const description = cleanInvoiceText(item.description, '-');
-    doc.fillColor('#0f2338').font('Helvetica').fontSize(8).text(String(item.quantity), contentLeft + 2, rowY + 3, {
-      width: qtyWidth - 4,
-      align: 'center'
-    });
-    doc.fillColor('#0f2338').text(description, contentLeft + qtyWidth + 4, rowY + 3, {
-      width: descWidth - 8,
-      ellipsis: true
-    });
-    doc.fillColor('#0f2338').text(item.unitAmount.toFixed(2), contentLeft + qtyWidth + descWidth, rowY + 3, {
-      width: unitWidth - 8,
-      align: 'right'
-    });
-    doc.fillColor('#0f2338').text(item.lineTotal.toFixed(2), contentLeft + qtyWidth + descWidth + unitWidth, rowY + 3, {
-      width: amountWidth - 2,
-      align: 'right'
-    });
-    if (idx < renderableItems.length - 1) {
-      doc
-        .save()
-        .moveTo(contentLeft, rowY + rowHeight)
-        .lineTo(contentLeft + contentWidth, rowY + rowHeight)
-        .strokeColor('#d4dfeb')
-        .lineWidth(0.5)
-        .stroke()
-        .restore();
-    }
-    rowY += rowHeight;
-  });
-  if (truncated) {
+  const billingCardY = ornateY + 14;
+  const cardHeight = 128;
+  doc
+    .save()
+    .roundedRect(left, billingCardY, width, cardHeight, 8)
+    .fillAndStroke(COLORS.white, COLORS.border)
+    .restore();
+  drawSoftCardHeader(doc, left, billingCardY, width, 'PLAYER / BILLING DETAILS');
+
+  const bodyY = billingCardY + 44;
+  drawMetaText(doc, left + 12, bodyY, 'Player Name', data.playerName);
+  drawMetaText(doc, left + 12, bodyY + 22, 'Player ID', data.playerCode);
+  drawMetaText(doc, left + 12, bodyY + 44, 'Guardian', clean(data.guardianName));
+  drawMetaText(doc, left + 12, bodyY + 66, 'Contact', clean(data.guardianContact));
+
+  const tableTop = billingCardY + cardHeight + 14;
+  const qtyW = 60;
+  const unitW = 110;
+  const amtW = 128;
+  const descW = width - qtyW - unitW - amtW;
+
+  doc
+    .save()
+    .roundedRect(left, tableTop, width, 30, 8)
+    .fill(COLORS.navy900)
+    .restore()
+    .fillColor(COLORS.white)
+    .font('Helvetica-Bold')
+    .fontSize(11)
+    .text('INVOICE ITEMS', left + 12, tableTop + 10)
+    .fontSize(9.5)
+    .text('QTY', left + descW, tableTop + 10, { width: qtyW - 8, align: 'center' })
+    .text('(UNIT)', left + descW + qtyW, tableTop + 10, { width: unitW - 8, align: 'right' })
+    .text(`AMOUNT (${data.currency})`, left + descW + qtyW + unitW, tableTop + 10, { width: amtW - 8, align: 'right' });
+
+  let rowY = tableTop + 30;
+  const rows = data.items.slice(0, 8);
+  rows.forEach((item, index) => {
+    const rowHeight = 30;
     doc
-      .fillColor('#4d5f71')
-      .font('Helvetica-Oblique')
-      .fontSize(7.5)
-      .text(`... ${data.items.length - renderableItems.length} more item(s)`, contentLeft + qtyWidth + 4, rowY + 1, {
-        width: descWidth - 8
-      });
-    rowY += 10;
-  }
-
-  const totalsTop = rowY + 10;
-  const totalsWidth = 190;
-  const totalsX = contentLeft + contentWidth - totalsWidth;
-  doc.fillColor('#0f2338').font('Helvetica-Bold').fontSize(8.5).text('Subtotal', totalsX + 16, totalsTop, { width: 74 });
-  doc.fillColor('#0f2338').font('Helvetica').fontSize(8.5).text(data.subtotalAmount.toFixed(2), totalsX + 88, totalsTop, {
-    width: 94,
-    align: 'right'
+      .save()
+      .rect(left, rowY, width, rowHeight)
+      .fillAndStroke(index % 2 === 0 ? COLORS.white : '#fafbfd', COLORS.border)
+      .restore()
+      .fillColor(COLORS.gray900)
+      .font('Helvetica')
+      .fontSize(10.2)
+      .text(clean(item.description), left + 12, rowY + 10, { width: descW - 16, ellipsis: true })
+      .text(String(item.quantity), left + descW + 2, rowY + 10, { width: qtyW - 8, align: 'center' })
+      .text(item.unitAmount.toFixed(2), left + descW + qtyW, rowY + 10, { width: unitW - 8, align: 'right' })
+      .text(item.lineTotal.toFixed(2), left + descW + qtyW + unitW, rowY + 10, { width: amtW - 8, align: 'right' });
+    rowY += rowHeight;
   });
+
+  rowY += 6;
   doc
     .save()
-    .moveTo(totalsX + 16, totalsTop + 13)
-    .lineTo(totalsX + totalsWidth - 8, totalsTop + 13)
-    .strokeColor('#b9cadb')
-    .lineWidth(0.7)
+    .roundedRect(left, rowY, width, 34, 8)
+    .fillAndStroke(COLORS.panel, COLORS.border)
+    .restore()
+    .fillColor(COLORS.gray900)
+    .font('Helvetica-Bold')
+    .fontSize(13)
+    .text('Sub-total', left + descW + qtyW + 10, rowY + 10, { width: 100, align: 'right' })
+    .text(data.subtotalAmount.toFixed(2), left + descW + qtyW + unitW, rowY + 10, { width: amtW - 8, align: 'right' });
+
+  const instructY = rowY + 48;
+  doc
+    .fillColor(COLORS.navy900)
+    .font('Helvetica-Bold')
+    .fontSize(13)
+    .text('PAYMENT INSTRUCTIONS', left, instructY);
+  doc
+    .save()
+    .moveTo(left + 194, instructY + 8)
+    .lineTo(right, instructY + 8)
+    .lineWidth(1)
+    .strokeColor(COLORS.border)
     .stroke()
     .restore();
-  doc.fillColor('#1a4f86').font('Helvetica-Bold').fontSize(11).text('TOTAL', totalsX + 16, totalsTop + 17, { width: 74 });
-  doc.fillColor('#1a4f86').font('Helvetica-Bold').fontSize(12).text(money(data.totalAmount, data.currency), totalsX + 88, totalsTop + 16, {
-    width: 94,
-    align: 'right'
+
+  doc
+    .fillColor(COLORS.gray900)
+    .font('Helvetica')
+    .fontSize(11)
+    .text(clean(data.paymentMethod, 'EFT / Cash'), left, instructY + 24)
+    .font('Helvetica-Bold')
+    .text(`REFERENCE: ${data.paymentReference}`, left, instructY + 46)
+    .font('Helvetica')
+    .text(clean(data.bankName), left, instructY + 68)
+    .text(clean(data.bankAccountNumber), left, instructY + 88);
+
+  const dueBoxW = 220;
+  const dueBoxX = right - dueBoxW;
+  doc
+    .save()
+    .roundedRect(dueBoxX, instructY - 6, dueBoxW, 76, 11)
+    .fillAndStroke(COLORS.white, COLORS.gold500)
+    .restore()
+    .fillColor(COLORS.gray900)
+    .font('Helvetica-Bold')
+    .fontSize(14)
+    .text('TOTAL DUE', dueBoxX + 16, instructY + 8)
+    .save()
+    .moveTo(dueBoxX + 12, instructY + 34)
+    .lineTo(dueBoxX + dueBoxW - 12, instructY + 34)
+    .lineWidth(1)
+    .strokeColor(COLORS.gold500)
+    .stroke()
+    .restore()
+    .fillColor(COLORS.gold600)
+    .font('Helvetica-Bold')
+    .fontSize(18)
+    .text(money(data.totalAmount, data.currency), dueBoxX + 12, instructY + 44, { width: dueBoxW - 24, align: 'right' });
+
+  const footerTop = doc.page.height - doc.page.margins.bottom - 46;
+  doc
+    .save()
+    .moveTo(left, footerTop - 10)
+    .lineTo(right, footerTop - 10)
+    .lineWidth(1)
+    .strokeColor(COLORS.border)
+    .stroke()
+    .restore()
+    .fillColor(COLORS.gray900)
+    .font('Helvetica')
+    .fontSize(10)
+    .text(`+264 81 299 4529   |   services@dynaverseinvestment.com`, left, footerTop, { width, align: 'center' });
+
+  doc
+    .save()
+    .rect(left, footerTop + 18, width, 15)
+    .fill(COLORS.navy900)
+    .restore()
+    .fillColor(COLORS.white)
+    .font('Helvetica')
+    .fontSize(11)
+    .text('/   www.dynaverseinvestment.com', left, footerTop + 21, { width, align: 'center' });
+}
+
+function drawReceiptTemplate(doc: PDFKit.PDFDocument, data: ReceiptDocumentData): void {
+  const { left, right, width } = pageBounds(doc);
+  const headerBottom = drawCommonHeader(doc, {
+    academyName: data.academyName,
+    subtitle: data.academyTagline,
+    title: 'RECEIPT',
+    accent: COLORS.green700
   });
 
-  const signatureY = totalsTop + 58;
+  const metaTop = headerBottom + 8;
+  drawMetaText(doc, left, metaTop, 'Receipt No', data.receiptNumber);
+  drawMetaText(doc, left, metaTop + 23, 'Receipt Date', longDate(data.receiptDate));
+  drawStatusPill(doc, right - 122, metaTop - 4, 116, 30, data.status, statusFill(data.status));
+
+  const ornateY = metaTop + 54;
   doc
-    .fillColor('#12243b')
-    .font('Helvetica-Oblique')
-    .fontSize(26)
-    .text('Dynaverse FA', totalsX - 8, signatureY, { width: 204, align: 'right' });
+    .save()
+    .moveTo(left, ornateY)
+    .lineTo(right, ornateY)
+    .lineWidth(1)
+    .strokeColor(COLORS.border)
+    .stroke()
+    .circle((left + right) / 2, ornateY, 4)
+    .fill(COLORS.green700)
+    .restore();
 
-  const termsTop = Math.min(Math.max(signatureY + 66, rowY + 34), bottom - 120);
-  doc.fillColor('#1f5e9a').font('Helvetica-Bold').fontSize(8).text('TERMS & CONDITIONS', contentLeft, termsTop);
-  doc.fillColor('#0f2338').font('Helvetica').fontSize(7.5).text('Payment is due within 7 days.', contentLeft, termsTop + 12);
-  doc.fillColor('#0f2338').font('Helvetica-Bold').fontSize(7.5).text('Name of Bank', contentLeft, termsTop + 30);
-  doc.fillColor('#0f2338').font('Helvetica').fontSize(7.5).text(data.bankName, contentLeft + 74, termsTop + 30);
-  doc.fillColor('#0f2338').font('Helvetica-Bold').fontSize(7.5).text('Account Name', contentLeft, termsTop + 42);
-  doc.fillColor('#0f2338').font('Helvetica').fontSize(7.5).text(data.bankAccountName, contentLeft + 74, termsTop + 42);
-  doc.fillColor('#0f2338').font('Helvetica-Bold').fontSize(7.5).text('Account #', contentLeft, termsTop + 54);
-  doc.fillColor('#0f2338').font('Helvetica').fontSize(7.5).text(data.bankAccountNumber, contentLeft + 74, termsTop + 54);
-  doc.fillColor('#0f2338').font('Helvetica-Bold').fontSize(7.5).text('Reference', contentLeft, termsTop + 66);
-  doc.fillColor('#0f2338').font('Helvetica').fontSize(7.5).text(data.paymentReference, contentLeft + 74, termsTop + 66);
-  doc.fillColor('#5a6e82').font('Helvetica').fontSize(7).text(`Issued By: ${data.issuedBy}`, contentLeft, termsTop + 82);
+  const cardY = ornateY + 14;
+  const cardH = 128;
+  doc
+    .save()
+    .roundedRect(left, cardY, width, cardH, 8)
+    .fillAndStroke(COLORS.white, COLORS.border)
+    .restore();
+  drawSoftCardHeader(doc, left, cardY, width, 'PAYMENT RECEIVED FROM:', '#e8efea');
 
-  doc.y = bottom;
+  const midX = left + width * 0.52;
+  doc
+    .save()
+    .moveTo(midX, cardY + 44)
+    .lineTo(midX, cardY + cardH - 8)
+    .lineWidth(1)
+    .strokeColor(COLORS.border)
+    .stroke()
+    .restore();
+
+  drawMetaText(doc, left + 12, cardY + 52, 'Player', data.playerName);
+  drawMetaText(doc, left + 12, cardY + 80, 'Employee ID', data.playerCode);
+  drawMetaText(doc, left + 12, cardY + 108, 'Guardian', '-');
+  drawMetaText(doc, midX + 12, cardY + 52, 'Program', clean(data.academyProgram));
+  drawMetaText(doc, midX + 12, cardY + 80, 'Payer', clean(data.playerName));
+  drawMetaText(doc, midX + 12, cardY + 108, 'Phone', clean(data.contactPhone ?? null));
+
+  const detailY = cardY + cardH + 14;
+  const detailH = 170;
+  doc
+    .save()
+    .roundedRect(left, detailY, width, detailH, 8)
+    .fillAndStroke(COLORS.white, COLORS.border)
+    .restore();
+  drawSoftCardHeader(doc, left, detailY, width, 'PAYMENT DETAILS', '#e8efea');
+
+  const primaryLine = data.appliedTo.length > 0 ? data.appliedTo[0] : 'Invoice settlement';
+  doc
+    .fillColor(COLORS.gray900)
+    .font('Helvetica-Bold')
+    .fontSize(14)
+    .text(primaryLine.toUpperCase(), left + 18, detailY + 54, { width: width - 36 })
+    .font('Helvetica')
+    .fontSize(15)
+    .text(data.paymentAmount.toFixed(2), right - 120, detailY + 54, { width: 100, align: 'right' });
+
+  doc
+    .save()
+    .roundedRect(left, detailY + 90, width, 34, 7)
+    .fillAndStroke('#e9f0eb', COLORS.border)
+    .restore()
+    .fillColor(COLORS.green800)
+    .font('Helvetica-Bold')
+    .fontSize(16)
+    .text('Total Paid:', left + 18, detailY + 102)
+    .text(data.totalPaid.toFixed(2), right - 120, detailY + 102, { width: 100, align: 'right' });
+
+  drawMetaText(doc, left + 18, detailY + 140, 'Payment Method', data.paymentMethod.toUpperCase());
+  drawMetaText(doc, left + 280, detailY + 140, 'Reference', clean(data.paymentReference));
+
+  const issuedBandY = detailY + detailH + 12;
+  doc
+    .save()
+    .roundedRect(left, issuedBandY, width, 40, 6)
+    .fill('#e8efea')
+    .restore()
+    .fillColor(COLORS.gray900)
+    .font('Helvetica')
+    .fontSize(12)
+    .text(`Issued by ${data.issuedBy}  |  Thank you`, left, issuedBandY + 14, { width, align: 'center' });
+
+  const footerTop = doc.page.height - doc.page.margins.bottom - 46;
+  doc
+    .save()
+    .moveTo(left, footerTop - 10)
+    .lineTo(right, footerTop - 10)
+    .lineWidth(1)
+    .strokeColor(COLORS.border)
+    .stroke()
+    .restore()
+    .fillColor(COLORS.gray900)
+    .font('Helvetica')
+    .fontSize(10)
+    .text(`${data.contactPhone}   |   ${data.contactEmail}`, left, footerTop, { width, align: 'center' });
+
+  doc
+    .save()
+    .rect(left, footerTop + 18, width, 15)
+    .fill(COLORS.navy900)
+    .restore()
+    .fillColor(COLORS.white)
+    .font('Helvetica')
+    .fontSize(11)
+    .text('/   www.dynaverseinvestment.com', left, footerTop + 21, { width, align: 'center' });
 }
 
 export async function buildInvoicePdf(data: InvoiceDocumentData): Promise<Buffer> {
   return renderPdf((doc) => {
-    drawTemplateInvoice(doc, data);
+    drawInvoiceTemplate(doc, data);
   });
 }
 
 export async function buildReceiptPdf(data: ReceiptDocumentData): Promise<Buffer> {
   return renderPdf((doc) => {
-    drawBrandHeader(doc, {
-      academyName: data.academyName,
-      subtitle: data.academyTagline,
-      documentTitle: 'RECEIPT',
-      documentNumberLabel: 'Receipt Number',
-      documentNumber: data.receiptNumber,
-      issueDateLabel: 'Receipt Date',
-      issueDate: data.receiptDate,
-      status: data.status
-    });
-
-    drawDetailCard(doc, 'PLAYER DETAILS', [
-      { label: 'Player Name', value: data.playerName },
-      { label: 'Player ID', value: data.playerCode },
-      { label: 'Academy Program', value: data.academyProgram }
-    ]);
-
-    drawDetailCard(doc, 'PAYMENT DETAILS', [
-      { label: 'Payment Method', value: data.paymentMethod.toUpperCase() },
-      { label: 'Payment Reference', value: data.paymentReference ?? '-' },
-      { label: 'Payment Amount', value: money(data.paymentAmount, data.currency) }
-    ]);
-
-    const appliedLines = data.appliedTo.length > 0 ? data.appliedTo : ['Invoice(s) Settled Successfully'];
-    const appliedAsText = appliedLines.map((line) => `- ${line}`).join('\n');
-    drawDetailCard(doc, 'APPLIED TO', [{ label: 'Items', value: appliedAsText }]);
-
-    drawDetailCard(doc, 'SUMMARY', [
-      { label: 'Total Paid', value: money(data.totalPaid, data.currency) },
-      { label: 'Balance Due', value: money(data.balanceDue, data.currency) },
-      { label: 'Issued By', value: data.issuedBy },
-      { label: 'Generated On', value: formatLongDate(data.generatedOn) }
-    ]);
-
-    drawFooterBand(doc, `Contact: ${data.contactEmail} | ${data.contactPhone}`);
+    drawReceiptTemplate(doc, data);
   });
 }

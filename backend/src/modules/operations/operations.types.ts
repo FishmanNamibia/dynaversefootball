@@ -128,7 +128,11 @@ export const CreateFundingSourceSchema = z.object({
 
 export const ReceiveFundingSchema = z.object({
   amount: z.coerce.number().positive(),
-  notes: z.string().optional()
+  receivedOn: DateString.optional(),
+  reference: z.string().optional(),
+  proofUrl: z.string().optional(),
+  notes: z.string().optional(),
+  recordedBy: z.string().optional()
 });
 
 export const CreateStaffMemberSchema = z.object({

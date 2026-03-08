@@ -12,6 +12,7 @@ import { playersRouter } from './modules/players/players.routes.js';
 import { catalogRouter } from './modules/catalog/catalog.routes.js';
 import { settingsRouter } from './modules/settings/settings.routes.js';
 import { operationsRouter } from './modules/operations/operations.routes.js';
+import { reportsRouter } from './modules/reports/reports.routes.js';
 import { requireAuth } from './middleware/auth.js';
 import { notFound } from './middleware/notFound.js';
 import { errorHandler } from './middleware/errorHandler.js';
@@ -36,6 +37,7 @@ export function createApp() {
   app.use('/api/catalog', catalogRouter);
   app.use('/api/settings', settingsRouter);
   app.use('/api/operations', operationsRouter);
+  app.use('/api/reports', reportsRouter);
 
   app.use(notFound);
   app.use(errorHandler);

@@ -6,6 +6,9 @@ export const RecordPaymentSchema = z.object({
   playerCode: z.string().min(1),
   method: z.enum(['eft', 'cash', 'card', 'mobile_money', 'other']),
   amount: z.coerce.number().positive(),
+  allocationType: z
+    .enum(['auto', 'registration', 'monthly_subscription', 'activity_contribution', 'other'])
+    .default('auto'),
   receivedOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   paymentReference: z.string().optional(),
   externalReference: z.string().optional(),
@@ -39,8 +42,32 @@ export const SendOutstandingRemindersSchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(200)
 });
 
+export const PayInvoiceSchema = z.object({
+  amount: z.coerce.number().positive().optional(),
+  method: z.enum(['eft', 'cash', 'card', 'mobile_money', 'other']).default('eft'),
+  receivedOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  paymentReference: z.string().optional(),
+  externalReference: z.string().optional(),
+  notes: z.string().optional(),
+  recordedBy: z.string().optional()
+});
+
+export const ReallocatePaymentSchema = z.object({
+  allocations: z
+    .array(
+      z.object({
+        invoiceId: z.string().uuid(),
+        amount: z.coerce.number().positive()
+      })
+    )
+    .max(200)
+    .default([])
+});
+
 export type RecordPaymentInput = z.infer<typeof RecordPaymentSchema>;
 export type GenerateMonthlyInvoicesInput = z.infer<typeof GenerateMonthlyInvoicesSchema>;
 export type CreateCustomFeeInvoiceInput = z.infer<typeof CreateCustomFeeInvoiceSchema>;
 export type SendInvoiceInput = z.infer<typeof SendInvoiceSchema>;
 export type SendOutstandingRemindersInput = z.infer<typeof SendOutstandingRemindersSchema>;
+export type PayInvoiceInput = z.infer<typeof PayInvoiceSchema>;
+export type ReallocatePaymentInput = z.infer<typeof ReallocatePaymentSchema>;

@@ -11,6 +11,8 @@ import { getAcademyProfileSettings } from '../settings/settings.store.js';
 import type {
   CreateCustomFeeInvoiceInput,
   GenerateMonthlyInvoicesInput,
+  PayInvoiceInput,
+  ReallocatePaymentInput,
   RecordPaymentInput,
   SendInvoiceInput,
   SendOutstandingRemindersInput
@@ -72,6 +74,7 @@ type OpenInvoiceRow = {
   total_amount: string;
   paid_amount: string;
   due_date: string;
+  invoice_type: string;
 };
 
 type MonthlyAssignmentRow = {
@@ -125,6 +128,65 @@ type ReceiptAllocationRow = {
   invoice_number: string;
   amount_allocated: string;
 };
+
+type PlayerBillingAccountRow = {
+  player_id: string;
+  player_code: string;
+  player_name: string;
+  training_group_code: string | null;
+  status: string;
+  guardian_id: string | null;
+  guardian_name: string | null;
+  guardian_email: string | null;
+  guardian_phone: string | null;
+};
+
+type PlayerBillingInvoiceRow = {
+  invoice_id: string;
+  invoice_number: string;
+  issue_date: string;
+  due_date: string;
+  status: string;
+  invoice_type: string;
+  total_amount: string;
+  paid_amount: string;
+  currency: string;
+};
+
+type PlayerPaymentHistoryRow = {
+  payment_id: string;
+  received_on: string;
+  method: string;
+  amount: string;
+  currency: string;
+  payment_reference: string | null;
+  external_reference: string | null;
+  allocated_amount: string;
+};
+
+type PaymentAllocationForAccountRow = {
+  payment_id: string;
+  invoice_id: string;
+  invoice_number: string;
+  amount_allocated: string;
+  invoice_type: string;
+};
+
+type ReallocatePaymentInvoiceRow = {
+  invoice_id: string;
+  total_amount: string;
+  paid_amount: string;
+};
+
+function invoiceTypeLabel(value: string): string {
+  const map: Record<string, string> = {
+    registration: 'Registration Fee',
+    monthly_subscription: 'Monthly Training Fee',
+    activity_contribution: 'Activity Contribution',
+    other: 'Other Fee'
+  };
+  return map[value] ?? 'Other Fee';
+}
 
 export async function listInvoices(status?: string, limit = 50): Promise<InvoiceListRow[]> {
   const normalizedLimit = Math.min(Math.max(limit, 1), 200);
@@ -706,6 +768,7 @@ export async function getReceiptPdfBuffer(paymentId: string): Promise<Buffer> {
 export async function recordPayment(input: RecordPaymentInput): Promise<{
   paymentId: string;
   playerId: string;
+  allocationType: 'auto' | 'registration' | 'monthly_subscription' | 'activity_contribution' | 'other';
   allocatedAmount: number;
   unallocatedAmount: number;
   allocations: Array<{ invoiceId: string; amount: number }>;
@@ -763,24 +826,51 @@ export async function recordPayment(input: RecordPaymentInput): Promise<{
           i.id,
           i.total_amount::text,
           COALESCE(SUM(pa.amount_allocated), 0)::text AS paid_amount,
-          i.due_date::text
+          i.due_date::text,
+          COALESCE(invoice_class.invoice_type, 'other') AS invoice_type
         FROM invoices i
+        LEFT JOIN LATERAL (
+          SELECT
+            CASE
+              WHEN BOOL_OR(fp.code = 'REGISTRATION' OR ii.description ILIKE '%registration%') THEN 'registration'
+              WHEN BOOL_OR(
+                fp.code = 'MONTHLY_SUBSCRIPTION'
+                OR ii.description ILIKE '%monthly%'
+                OR ii.description ILIKE '%subscription%'
+                OR ii.description ILIKE '%training fee%'
+              ) THEN 'monthly_subscription'
+              WHEN BOOL_OR(
+                ii.description ILIKE '[activity_contribution]%'
+                OR ii.description ILIKE '%activity contribution%'
+                OR ii.description ILIKE '%tournament%'
+              ) THEN 'activity_contribution'
+              ELSE 'other'
+            END AS invoice_type
+          FROM invoice_items ii
+          LEFT JOIN fee_plans fp ON fp.id = ii.fee_plan_id
+          WHERE ii.invoice_id = i.id
+        ) invoice_class ON TRUE
         LEFT JOIN payment_allocations pa ON pa.invoice_id = i.id
         WHERE
           i.player_id = $1
           AND i.status IN ('sent', 'partially_paid', 'overdue')
-        GROUP BY i.id
+        GROUP BY i.id, invoice_class.invoice_type
         ORDER BY i.due_date ASC
       `,
       [playerId]
     );
 
+    const allocationType = input.allocationType ?? 'auto';
     let remaining = input.amount;
     const allocations: Array<{ invoiceId: string; amount: number }> = [];
 
     for (const invoice of openInvoices.rows) {
       if (remaining <= 0) {
         break;
+      }
+
+      if (allocationType !== 'auto' && invoice.invoice_type !== allocationType) {
+        continue;
       }
 
       const total = Number(invoice.total_amount);
@@ -811,9 +901,543 @@ export async function recordPayment(input: RecordPaymentInput): Promise<{
     return {
       paymentId,
       playerId,
+      allocationType,
       allocatedAmount: input.amount - remaining,
       unallocatedAmount: remaining,
       allocations
+    };
+  });
+}
+
+export async function payInvoiceDirectly(
+  invoiceId: string,
+  input: PayInvoiceInput
+): Promise<{
+  paymentId: string;
+  invoiceId: string;
+  playerId: string;
+  invoiceNumber: string;
+  allocatedAmount: number;
+  unallocatedAmount: number;
+  outstandingBefore: number;
+  outstandingAfter: number;
+}> {
+  return withTransaction(async (client) => {
+    const invoiceResult = await client.query<{
+      id: string;
+      invoice_number: string;
+      player_id: string;
+      total_amount: string;
+      currency: string;
+    }>(
+      `
+        SELECT id, invoice_number, player_id, total_amount::text, currency
+        FROM invoices
+        WHERE id = $1
+        LIMIT 1
+      `,
+      [invoiceId]
+    );
+    const invoice = invoiceResult.rows[0];
+    if (!invoice) {
+      throw new HttpError(404, 'Invoice not found');
+    }
+
+    const paidResult = await client.query<{ paid_amount: string }>(
+      `
+        SELECT COALESCE(SUM(amount_allocated), 0)::text AS paid_amount
+        FROM payment_allocations
+        WHERE invoice_id = $1
+      `,
+      [invoiceId]
+    );
+
+    const paidAmount = Number(paidResult.rows[0]?.paid_amount ?? 0);
+    const outstandingBefore = Math.max(Number(invoice.total_amount) - paidAmount, 0);
+    if (outstandingBefore <= 0) {
+      throw new HttpError(400, 'Invoice is already fully paid');
+    }
+
+    const amountToPay = Number(input.amount ?? outstandingBefore);
+    if (!Number.isFinite(amountToPay) || amountToPay <= 0) {
+      throw new HttpError(400, 'Payment amount must be greater than zero');
+    }
+    if (amountToPay - outstandingBefore > 0.00001) {
+      throw new HttpError(400, 'Direct invoice payment cannot exceed invoice outstanding amount');
+    }
+
+    const paymentResult = await client.query<{ id: string }>(
+      `
+        INSERT INTO payments (
+          player_id,
+          received_on,
+          method,
+          amount,
+          payment_reference,
+          external_reference,
+          notes,
+          recorded_by
+        )
+        VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3::payment_method, $4, $5, $6, $7, $8)
+        RETURNING id
+      `,
+      [
+        invoice.player_id,
+        input.receivedOn ?? null,
+        input.method,
+        amountToPay,
+        input.paymentReference ?? null,
+        input.externalReference ?? null,
+        input.notes ?? null,
+        input.recordedBy ?? null
+      ]
+    );
+    const paymentId = paymentResult.rows[0]?.id;
+    if (!paymentId) {
+      throw new HttpError(500, 'Failed to create invoice payment');
+    }
+
+    await client.query(
+      `
+        INSERT INTO payment_allocations (payment_id, invoice_id, amount_allocated)
+        VALUES ($1, $2, $3)
+      `,
+      [paymentId, invoiceId, amountToPay]
+    );
+
+    await refreshInvoiceStatus(client, invoiceId);
+    const outstandingAfter = Math.max(outstandingBefore - amountToPay, 0);
+
+    return {
+      paymentId,
+      invoiceId,
+      playerId: invoice.player_id,
+      invoiceNumber: invoice.invoice_number,
+      allocatedAmount: amountToPay,
+      unallocatedAmount: 0,
+      outstandingBefore,
+      outstandingAfter
+    };
+  });
+}
+
+export async function getPlayerBillingAccount(playerCode: string, limit = 50): Promise<{
+  player: {
+    id: string;
+    code: string;
+    name: string;
+    trainingGroupCode: string | null;
+    status: string;
+  };
+  guardian: {
+    id: string | null;
+    name: string | null;
+    email: string | null;
+    phone: string | null;
+  };
+  totals: {
+    totalInvoiced: number;
+    totalPaidToInvoices: number;
+    totalOutstanding: number;
+    totalPaymentsReceived: number;
+    unallocatedPayments: number;
+    invoiceCount: number;
+    paymentCount: number;
+  };
+  invoices: Array<{
+    invoiceId: string;
+    invoiceNumber: string;
+    issueDate: string;
+    dueDate: string;
+    status: string;
+    invoiceType: string;
+    invoiceTypeLabel: string;
+    totalAmount: number;
+    paidAmount: number;
+    outstandingAmount: number;
+    currency: string;
+  }>;
+  payments: Array<{
+    paymentId: string;
+    receivedOn: string;
+    method: string;
+    amount: number;
+    allocatedAmount: number;
+    unallocatedAmount: number;
+    currency: string;
+    paymentReference: string | null;
+    externalReference: string | null;
+    allocations: Array<{
+      invoiceId: string;
+      invoiceNumber: string;
+      invoiceType: string;
+      invoiceTypeLabel: string;
+      allocatedAmount: number;
+    }>;
+  }>;
+}> {
+  const normalizedLimit = Math.min(Math.max(limit, 1), 200);
+
+  const playerResult = await pool.query<PlayerBillingAccountRow>(
+    `
+      SELECT
+        p.id AS player_id,
+        p.player_code,
+        CONCAT(p.first_name, ' ', p.last_name) AS player_name,
+        tg.code AS training_group_code,
+        p.status,
+        x.guardian_id,
+        CONCAT(g.first_name, ' ', g.last_name) AS guardian_name,
+        g.email AS guardian_email,
+        g.phone_whatsapp AS guardian_phone
+      FROM players p
+      LEFT JOIN LATERAL (
+        SELECT e.training_group_id
+        FROM enrollments e
+        WHERE e.player_id = p.id
+        ORDER BY e.created_at DESC
+        LIMIT 1
+      ) latest_enrollment ON TRUE
+      LEFT JOIN training_groups tg ON tg.id = latest_enrollment.training_group_id
+      LEFT JOIN LATERAL (
+        SELECT guardian_id
+        FROM player_guardians
+        WHERE player_id = p.id
+        ORDER BY is_billing_contact DESC, is_primary_contact DESC, created_at ASC
+        LIMIT 1
+      ) x ON TRUE
+      LEFT JOIN guardians g ON g.id = x.guardian_id
+      WHERE p.player_code = $1
+      LIMIT 1
+    `,
+    [playerCode]
+  );
+
+  const player = playerResult.rows[0];
+  if (!player) {
+    throw new HttpError(404, `Player with code ${playerCode} not found`);
+  }
+
+  const invoicesResult = await pool.query<PlayerBillingInvoiceRow>(
+    `
+      SELECT
+        i.id AS invoice_id,
+        i.invoice_number,
+        i.issue_date::text,
+        i.due_date::text,
+        i.status::text,
+        COALESCE(invoice_class.invoice_type, 'other') AS invoice_type,
+        i.total_amount::text,
+        COALESCE(SUM(pa.amount_allocated), 0)::text AS paid_amount,
+        i.currency
+      FROM invoices i
+      LEFT JOIN LATERAL (
+        SELECT
+          CASE
+            WHEN BOOL_OR(fp.code = 'REGISTRATION' OR ii.description ILIKE '%registration%') THEN 'registration'
+            WHEN BOOL_OR(
+              fp.code = 'MONTHLY_SUBSCRIPTION'
+              OR ii.description ILIKE '%monthly%'
+              OR ii.description ILIKE '%subscription%'
+              OR ii.description ILIKE '%training fee%'
+            ) THEN 'monthly_subscription'
+            WHEN BOOL_OR(
+              ii.description ILIKE '[activity_contribution]%'
+              OR ii.description ILIKE '%activity contribution%'
+              OR ii.description ILIKE '%tournament%'
+            ) THEN 'activity_contribution'
+            ELSE 'other'
+          END AS invoice_type
+        FROM invoice_items ii
+        LEFT JOIN fee_plans fp ON fp.id = ii.fee_plan_id
+        WHERE ii.invoice_id = i.id
+      ) invoice_class ON TRUE
+      LEFT JOIN payment_allocations pa ON pa.invoice_id = i.id
+      WHERE i.player_id = $1
+      GROUP BY i.id, invoice_class.invoice_type
+      ORDER BY i.issue_date DESC, i.created_at DESC
+      LIMIT $2
+    `,
+    [player.player_id, normalizedLimit]
+  );
+
+  const paymentsResult = await pool.query<PlayerPaymentHistoryRow>(
+    `
+      SELECT
+        p.id AS payment_id,
+        p.received_on::text,
+        p.method::text,
+        p.amount::text,
+        p.currency,
+        p.payment_reference,
+        p.external_reference,
+        COALESCE(SUM(pa.amount_allocated), 0)::text AS allocated_amount
+      FROM payments p
+      LEFT JOIN payment_allocations pa ON pa.payment_id = p.id
+      WHERE p.player_id = $1
+      GROUP BY p.id
+      ORDER BY p.received_on DESC, p.created_at DESC
+      LIMIT $2
+    `,
+    [player.player_id, normalizedLimit]
+  );
+
+  const invoices = invoicesResult.rows.map((invoice) => {
+    const totalAmount = Number(invoice.total_amount);
+    const paidAmount = Number(invoice.paid_amount);
+    const outstandingAmount = Math.max(totalAmount - paidAmount, 0);
+    return {
+      invoiceId: invoice.invoice_id,
+      invoiceNumber: invoice.invoice_number,
+      issueDate: invoice.issue_date,
+      dueDate: invoice.due_date,
+      status: invoice.status,
+      invoiceType: invoice.invoice_type,
+      invoiceTypeLabel: invoiceTypeLabel(invoice.invoice_type),
+      totalAmount,
+      paidAmount,
+      outstandingAmount,
+      currency: invoice.currency
+    };
+  });
+
+  const payments = paymentsResult.rows.map((payment) => {
+    const amount = Number(payment.amount);
+    const allocatedAmount = Number(payment.allocated_amount);
+    return {
+      paymentId: payment.payment_id,
+      receivedOn: payment.received_on,
+      method: payment.method,
+      amount,
+      allocatedAmount,
+      unallocatedAmount: Math.max(amount - allocatedAmount, 0),
+      currency: payment.currency,
+      paymentReference: payment.payment_reference,
+      externalReference: payment.external_reference
+    };
+  });
+
+  const paymentIds = payments.map((payment) => payment.paymentId);
+  const paymentAllocationsMap = new Map<
+    string,
+    Array<{ invoiceId: string; invoiceNumber: string; invoiceType: string; invoiceTypeLabel: string; allocatedAmount: number }>
+  >();
+  if (paymentIds.length > 0) {
+    const allocationsResult = await pool.query<PaymentAllocationForAccountRow>(
+      `
+        SELECT
+          pa.payment_id,
+          pa.invoice_id,
+          i.invoice_number,
+          pa.amount_allocated::text,
+          COALESCE(invoice_class.invoice_type, 'other') AS invoice_type
+        FROM payment_allocations pa
+        INNER JOIN invoices i ON i.id = pa.invoice_id
+        LEFT JOIN LATERAL (
+          SELECT
+            CASE
+              WHEN BOOL_OR(fp.code = 'REGISTRATION' OR ii.description ILIKE '%registration%') THEN 'registration'
+              WHEN BOOL_OR(
+                fp.code = 'MONTHLY_SUBSCRIPTION'
+                OR ii.description ILIKE '%monthly%'
+                OR ii.description ILIKE '%subscription%'
+                OR ii.description ILIKE '%training fee%'
+              ) THEN 'monthly_subscription'
+              WHEN BOOL_OR(
+                ii.description ILIKE '[activity_contribution]%'
+                OR ii.description ILIKE '%activity contribution%'
+                OR ii.description ILIKE '%tournament%'
+              ) THEN 'activity_contribution'
+              ELSE 'other'
+            END AS invoice_type
+          FROM invoice_items ii
+          LEFT JOIN fee_plans fp ON fp.id = ii.fee_plan_id
+          WHERE ii.invoice_id = i.id
+        ) invoice_class ON TRUE
+        WHERE pa.payment_id = ANY($1::uuid[])
+        ORDER BY i.issue_date ASC
+      `,
+      [paymentIds]
+    );
+    allocationsResult.rows.forEach((row) => {
+      const entries = paymentAllocationsMap.get(row.payment_id) ?? [];
+      entries.push({
+        invoiceId: row.invoice_id,
+        invoiceNumber: row.invoice_number,
+        invoiceType: row.invoice_type,
+        invoiceTypeLabel: invoiceTypeLabel(row.invoice_type),
+        allocatedAmount: Number(row.amount_allocated)
+      });
+      paymentAllocationsMap.set(row.payment_id, entries);
+    });
+  }
+
+  const paymentsWithAllocations = payments.map((payment) => ({
+    ...payment,
+    allocations: paymentAllocationsMap.get(payment.paymentId) ?? []
+  }));
+
+  const totalInvoiced = invoices.reduce((sum, invoice) => sum + invoice.totalAmount, 0);
+  const totalPaidToInvoices = invoices.reduce((sum, invoice) => sum + invoice.paidAmount, 0);
+  const totalOutstanding = invoices.reduce((sum, invoice) => sum + invoice.outstandingAmount, 0);
+  const totalPaymentsReceived = paymentsWithAllocations.reduce((sum, payment) => sum + payment.amount, 0);
+  const unallocatedPayments = Math.max(totalPaymentsReceived - totalPaidToInvoices, 0);
+
+  return {
+    player: {
+      id: player.player_id,
+      code: player.player_code,
+      name: player.player_name,
+      trainingGroupCode: player.training_group_code,
+      status: player.status
+    },
+    guardian: {
+      id: player.guardian_id,
+      name: player.guardian_name,
+      email: player.guardian_email,
+      phone: player.guardian_phone
+    },
+    totals: {
+      totalInvoiced,
+      totalPaidToInvoices,
+      totalOutstanding,
+      totalPaymentsReceived,
+      unallocatedPayments,
+      invoiceCount: invoices.length,
+      paymentCount: payments.length
+    },
+    invoices,
+    payments: paymentsWithAllocations
+  };
+}
+
+export async function reallocatePayment(
+  paymentId: string,
+  input: ReallocatePaymentInput
+): Promise<{
+  paymentId: string;
+  paymentAmount: number;
+  allocatedAmount: number;
+  unallocatedAmount: number;
+  allocations: Array<{ invoiceId: string; amount: number }>;
+}> {
+  return withTransaction(async (client) => {
+    const paymentResult = await client.query<{ id: string; player_id: string; amount: string }>(
+      `
+        SELECT id, player_id, amount::text
+        FROM payments
+        WHERE id = $1
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [paymentId]
+    );
+    const payment = paymentResult.rows[0];
+    if (!payment) {
+      throw new HttpError(404, 'Payment not found');
+    }
+
+    const requestedAllocationsMap = new Map<string, number>();
+    for (const allocation of input.allocations ?? []) {
+      const current = requestedAllocationsMap.get(allocation.invoiceId) ?? 0;
+      requestedAllocationsMap.set(allocation.invoiceId, Number((current + allocation.amount).toFixed(2)));
+    }
+    const requestedAllocations = Array.from(requestedAllocationsMap.entries()).map(([invoiceId, amount]) => ({
+      invoiceId,
+      amount
+    }));
+
+    const paymentAmount = Number(payment.amount);
+    const requestedTotal = requestedAllocations.reduce((sum, row) => sum + row.amount, 0);
+    if (requestedTotal - paymentAmount > 0.00001) {
+      throw new HttpError(400, 'Reallocation exceeds payment amount');
+    }
+
+    const currentAllocationsResult = await client.query<{ invoice_id: string; allocated_amount: string }>(
+      `
+        SELECT invoice_id, SUM(amount_allocated)::text AS allocated_amount
+        FROM payment_allocations
+        WHERE payment_id = $1
+        GROUP BY invoice_id
+      `,
+      [paymentId]
+    );
+    const currentAllocationByInvoice = new Map<string, number>();
+    const previousInvoiceIds = new Set<string>();
+    currentAllocationsResult.rows.forEach((row) => {
+      previousInvoiceIds.add(row.invoice_id);
+      currentAllocationByInvoice.set(row.invoice_id, Number(row.allocated_amount));
+    });
+
+    if (requestedAllocations.length > 0) {
+      const targetInvoiceIds = requestedAllocations.map((row) => row.invoiceId);
+      const targetInvoicesResult = await client.query<ReallocatePaymentInvoiceRow>(
+        `
+          SELECT
+            i.id AS invoice_id,
+            i.total_amount::text,
+            COALESCE(SUM(pa.amount_allocated), 0)::text AS paid_amount
+          FROM invoices i
+          LEFT JOIN payment_allocations pa ON pa.invoice_id = i.id
+          WHERE
+            i.player_id = $1
+            AND i.id = ANY($2::uuid[])
+          GROUP BY i.id
+        `,
+        [payment.player_id, targetInvoiceIds]
+      );
+
+      if (targetInvoicesResult.rows.length !== targetInvoiceIds.length) {
+        throw new HttpError(400, 'One or more target invoices do not belong to this player');
+      }
+
+      const targetInvoiceMap = new Map<string, { totalAmount: number; paidAmount: number }>();
+      targetInvoicesResult.rows.forEach((row) => {
+        targetInvoiceMap.set(row.invoice_id, {
+          totalAmount: Number(row.total_amount),
+          paidAmount: Number(row.paid_amount)
+        });
+      });
+
+      for (const row of requestedAllocations) {
+        const invoice = targetInvoiceMap.get(row.invoiceId);
+        if (!invoice) {
+          throw new HttpError(400, `Invoice ${row.invoiceId} is invalid for reallocation`);
+        }
+        const alreadyOnThisInvoice = currentAllocationByInvoice.get(row.invoiceId) ?? 0;
+        const outstanding = Math.max(invoice.totalAmount - invoice.paidAmount, 0);
+        const maxAllowed = outstanding + alreadyOnThisInvoice;
+        if (row.amount - maxAllowed > 0.00001) {
+          throw new HttpError(400, `Allocation exceeds outstanding balance for invoice ${row.invoiceId}`);
+        }
+      }
+    }
+
+    await client.query(`DELETE FROM payment_allocations WHERE payment_id = $1`, [paymentId]);
+    for (const row of requestedAllocations) {
+      await client.query(
+        `
+          INSERT INTO payment_allocations (payment_id, invoice_id, amount_allocated)
+          VALUES ($1, $2, $3)
+        `,
+        [paymentId, row.invoiceId, row.amount]
+      );
+    }
+
+    const impactedInvoiceIds = new Set<string>([
+      ...Array.from(previousInvoiceIds),
+      ...requestedAllocations.map((row) => row.invoiceId)
+    ]);
+    for (const invoiceId of impactedInvoiceIds) {
+      await refreshInvoiceStatus(client, invoiceId);
+    }
+
+    return {
+      paymentId,
+      paymentAmount,
+      allocatedAmount: Number(requestedTotal.toFixed(2)),
+      unallocatedAmount: Number((paymentAmount - requestedTotal).toFixed(2)),
+      allocations: requestedAllocations
     };
   });
 }

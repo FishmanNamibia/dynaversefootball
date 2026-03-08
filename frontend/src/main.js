@@ -7,9 +7,12 @@ const state = {
   activeView: 'dashboard',
   groups: [],
   selectedPlayer: null,
+  selectedBillingPlayerCode: null,
   selectedCollectionGuardianId: null,
   operationsStage: 'inventory',
-  operationsPayrollPeriod: new Date().toISOString().slice(0, 7)
+  operationsPayrollPeriod: new Date().toISOString().slice(0, 7),
+  reportsFrom: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10),
+  reportsTo: new Date().toISOString().slice(0, 10)
 };
 
 function setToken(token) {
@@ -309,6 +312,7 @@ function renderShell() {
           <button data-view="attendance" class="nav-btn ${state.activeView === 'attendance' ? 'active' : ''}">Attendance</button>
           <button data-view="reminders" class="nav-btn ${state.activeView === 'reminders' ? 'active' : ''}">Reminders</button>
           <button data-view="operations" class="nav-btn ${state.activeView === 'operations' ? 'active' : ''}">Operations</button>
+          <button data-view="reports" class="nav-btn ${state.activeView === 'reports' ? 'active' : ''}">Reports</button>
           <button data-view="settings" class="nav-btn ${state.activeView === 'settings' ? 'active' : ''}">Settings</button>
         </nav>
         <div class="sidebar-footer">
@@ -344,6 +348,7 @@ function renderShell() {
     setToken('');
     state.user = null;
     state.selectedPlayer = null;
+    state.selectedBillingPlayerCode = null;
     state.selectedCollectionGuardianId = null;
     render();
   });
@@ -366,6 +371,7 @@ function viewTitle(view) {
   if (view === 'attendance') return 'Training Attendance';
   if (view === 'reminders') return 'Payment Reminder Operations';
   if (view === 'operations') return 'Inventory, Needs, Procurement & Staff Payments';
+  if (view === 'reports') return 'Financial Transparency & Accountability';
   if (view === 'settings') return 'System Configuration Center';
   return 'Football Academy Dashboard';
 }
@@ -377,6 +383,7 @@ function viewSubtitle(view) {
   if (view === 'attendance') return 'Create sessions and mark player attendance.';
   if (view === 'reminders') return 'Send due reminders and outstanding monthly fee notifications to parents.';
   if (view === 'operations') return 'Control stock readiness, club needs, procurement workflow, funding, and salary payouts.';
+  if (view === 'reports') return 'Track every transfer, usage, and proof trail for financial transparency.';
   if (view === 'settings') return 'Manage academy setup, channels, billing defaults, reminder rules, and audit logs.';
   return 'Daily operations overview for Dynaverse Football Academy.';
 }
@@ -413,6 +420,10 @@ async function loadView() {
     }
     if (state.activeView === 'operations') {
       await renderOperationsView(host);
+      return;
+    }
+    if (state.activeView === 'reports') {
+      await renderReportsView(host);
       return;
     }
     if (state.activeView === 'settings') {
@@ -550,13 +561,22 @@ function groupOptions() {
   return options.join('');
 }
 
-function playerOptions(players) {
+function playerOptions(players, selectedCode = '') {
   return players
     .map(
       (player) =>
-        `<option value="${player.player_code}">${player.player_code} - ${player.first_name} ${player.last_name}</option>`
+        `<option value="${player.player_code}" ${selectedCode === player.player_code ? 'selected' : ''}>${player.player_code} - ${player.first_name} ${player.last_name}</option>`
     )
     .join('');
+}
+
+function openBillingForPlayer(playerCode) {
+  if (!playerCode) {
+    return;
+  }
+  state.selectedBillingPlayerCode = playerCode;
+  state.activeView = 'billing';
+  render();
 }
 
 function renderRegistrationView(host) {
@@ -715,6 +735,23 @@ function bindRegistrationView() {
 async function renderPlayersView(host) {
   const playersRes = await api('/players?limit=200');
   const players = playersRes.data || [];
+  const renderRows = (rows) =>
+    rows
+      .map(
+        (p) =>
+          `<tr data-player-id="${p.player_id}" data-player-code="${p.player_code}">
+            <td>${p.player_code}</td>
+            <td>${p.first_name} ${p.last_name}</td>
+            <td>${p.training_group_code || '-'}</td>
+            <td>${p.guardian_name || '-'}</td>
+            <td>${p.guardian_phone || '-'}</td>
+            <td>${p.status}</td>
+            <td class="mini-actions">
+              <button class="ghost" data-player-action="open-billing" data-player-code="${p.player_code}">Billing</button>
+            </td>
+          </tr>`
+      )
+      .join('');
 
   host.innerHTML = `
     <div class="card">
@@ -723,22 +760,10 @@ async function renderPlayersView(host) {
         <button id="searchPlayersBtn">Search</button>
       </div>
       <table id="playersTable">
-        <thead><tr><th>Player Code</th><th>Name</th><th>Group</th><th>Guardian</th><th>Phone</th><th>Status</th></tr></thead>
+        <thead><tr><th>Player Code</th><th>Name</th><th>Group</th><th>Guardian</th><th>Phone</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>
           ${
-            players
-              .map(
-                (p) =>
-                  `<tr data-player-id="${p.player_id}">
-                    <td>${p.player_code}</td>
-                    <td>${p.first_name} ${p.last_name}</td>
-                    <td>${p.training_group_code || '-'}</td>
-                    <td>${p.guardian_name || '-'}</td>
-                    <td>${p.guardian_phone || '-'}</td>
-                    <td>${p.status}</td>
-                  </tr>`
-              )
-              .join('') || '<tr><td colspan="6">No players found</td></tr>'
+            renderRows(players) || '<tr><td colspan="7">No players found</td></tr>'
           }
         </tbody>
       </table>
@@ -749,18 +774,29 @@ async function renderPlayersView(host) {
     </div>
   `;
 
-  document.querySelectorAll('#playersTable tbody tr[data-player-id]').forEach((row) => {
-    row.addEventListener('click', async () => {
-      const playerId = row.dataset.playerId;
-      if (!playerId) return;
-      try {
-        const details = await api(`/players/${playerId}`);
-        state.selectedPlayer = details.data;
-        renderPlayerDetails(details.data);
-      } catch (error) {
-        notify(error.message, 'error');
-      }
-    });
+  document.querySelector('#playersTable')?.addEventListener('click', async (event) => {
+    const billingBtn = event.target.closest('button[data-player-action="open-billing"]');
+    if (billingBtn) {
+      const playerCode = billingBtn.dataset.playerCode;
+      openBillingForPlayer(playerCode);
+      return;
+    }
+
+    const row = event.target.closest('tr[data-player-id]');
+    if (!row) {
+      return;
+    }
+    const playerId = row.dataset.playerId;
+    if (!playerId) {
+      return;
+    }
+    try {
+      const details = await api(`/players/${playerId}`);
+      state.selectedPlayer = details.data;
+      renderPlayerDetails(details.data);
+    } catch (error) {
+      notify(error.message, 'error');
+    }
   });
 
   document.querySelector('#searchPlayersBtn').addEventListener('click', async () => {
@@ -770,27 +806,7 @@ async function renderPlayersView(host) {
       const tableBody = document.querySelector('#playersTable tbody');
       const data = result.data || [];
       tableBody.innerHTML =
-        data
-          .map(
-            (p) =>
-              `<tr data-player-id="${p.player_id}">
-                <td>${p.player_code}</td>
-                <td>${p.first_name} ${p.last_name}</td>
-                <td>${p.training_group_code || '-'}</td>
-                <td>${p.guardian_name || '-'}</td>
-                <td>${p.guardian_phone || '-'}</td>
-                <td>${p.status}</td>
-              </tr>`
-          )
-          .join('') || '<tr><td colspan="6">No players found</td></tr>';
-      document.querySelectorAll('#playersTable tbody tr[data-player-id]').forEach((row) => {
-        row.addEventListener('click', async () => {
-          const playerId = row.dataset.playerId;
-          if (!playerId) return;
-          const details = await api(`/players/${playerId}`);
-          renderPlayerDetails(details.data);
-        });
-      });
+        renderRows(data) || '<tr><td colspan="7">No players found</td></tr>';
     } catch (error) {
       notify(error.message, 'error');
     }
@@ -806,6 +822,9 @@ function renderPlayerDetails(data) {
   const medical = data.medical || {};
   card.innerHTML = `
     <h3>${player.player_code} - ${player.first_name} ${player.last_name}</h3>
+    <div class="actions">
+      <button id="openSelectedPlayerBillingBtn">Open Billing, Payment History & Actions</button>
+    </div>
     <div class="details-grid">
       <div>
         <h4>Player</h4>
@@ -828,6 +847,10 @@ function renderPlayerDetails(data) {
       </div>
     </div>
   `;
+
+  card.querySelector('#openSelectedPlayerBillingBtn')?.addEventListener('click', () => {
+    openBillingForPlayer(player.player_code);
+  });
 }
 
 async function renderBillingView(host) {
@@ -840,9 +863,136 @@ async function renderBillingView(host) {
   const invoices = invoicesRes.data || [];
   const outstanding = outstandingRes.data || [];
   const hasPlayers = players.length > 0;
+  const hasFocusedPlayer =
+    Boolean(state.selectedBillingPlayerCode) &&
+    players.some((player) => player.player_code === state.selectedBillingPlayerCode);
+  if (state.selectedBillingPlayerCode && !hasFocusedPlayer) {
+    state.selectedBillingPlayerCode = null;
+  }
+  const focusedPlayerCode = hasFocusedPlayer ? state.selectedBillingPlayerCode : null;
+  let focusedPlayerAccount = null;
+  if (focusedPlayerCode) {
+    try {
+      const accountRes = await api(`/billing/players/${encodeURIComponent(focusedPlayerCode)}/account?limit=100`);
+      focusedPlayerAccount = accountRes.data || null;
+    } catch (error) {
+      notify(`Could not load player billing history: ${error.message}`, 'error');
+    }
+  }
   const defaultDueDate = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10);
 
+  const focusedAccountCard = focusedPlayerAccount
+    ? `
+      <article class="card" id="focusedPlayerBillingCard">
+        <div class="section-head">
+          <h3>Player Billing Account: ${escapeHtml(focusedPlayerAccount.player.code)} - ${escapeHtml(focusedPlayerAccount.player.name)}</h3>
+          <div class="mini-actions">
+            <button id="focusPlayerPaymentBtn">Action Payment</button>
+            <button id="clearFocusedPlayerBtn" class="ghost">Clear</button>
+          </div>
+        </div>
+        <div class="cards four">
+          <article class="card stat"><h3>${formatMoney(focusedPlayerAccount.totals.totalInvoiced)}</h3><p>Total Invoiced</p></article>
+          <article class="card stat"><h3>${formatMoney(focusedPlayerAccount.totals.totalPaidToInvoices)}</h3><p>Paid to Invoices</p></article>
+          <article class="card stat"><h3>${formatMoney(focusedPlayerAccount.totals.totalOutstanding)}</h3><p>Outstanding</p></article>
+          <article class="card stat"><h3>${focusedPlayerAccount.totals.paymentCount}</h3><p>Payments Recorded</p></article>
+        </div>
+        <div class="details-grid">
+          <div>
+            <h4>Player</h4>
+            <p><strong>Group:</strong> ${escapeHtml(focusedPlayerAccount.player.trainingGroupCode || '-')}</p>
+            <p><strong>Status:</strong> ${escapeHtml(focusedPlayerAccount.player.status || '-')}</p>
+          </div>
+          <div>
+            <h4>Guardian</h4>
+            <p><strong>Name:</strong> ${escapeHtml(focusedPlayerAccount.guardian.name || '-')}</p>
+            <p><strong>Phone:</strong> ${escapeHtml(focusedPlayerAccount.guardian.phone || '-')}</p>
+            <p><strong>Email:</strong> ${escapeHtml(focusedPlayerAccount.guardian.email || '-')}</p>
+          </div>
+        </div>
+        <h4>Player Invoices</h4>
+        <table id="focusedPlayerInvoiceTable">
+          <thead><tr><th>Invoice</th><th>Type</th><th>Issue</th><th>Due</th><th>Status</th><th>Total</th><th>Paid</th><th>Outstanding</th><th>Actions</th></tr></thead>
+          <tbody>
+            ${
+              focusedPlayerAccount.invoices.length
+                ? focusedPlayerAccount.invoices
+                    .map(
+                      (invoice) => `<tr>
+                        <td>${escapeHtml(invoice.invoiceNumber)}</td>
+                        <td>${escapeHtml(invoice.invoiceTypeLabel || invoice.invoiceType || 'Other Fee')}</td>
+                        <td>${formatDate(invoice.issueDate)}</td>
+                        <td>${formatDate(invoice.dueDate)}</td>
+                        <td>${escapeHtml(invoice.status)}</td>
+                        <td>${formatMoney(invoice.totalAmount, invoice.currency)}</td>
+                        <td>${formatMoney(invoice.paidAmount, invoice.currency)}</td>
+                        <td>${formatMoney(invoice.outstandingAmount, invoice.currency)}</td>
+                        <td class="mini-actions">
+                          ${
+                            Number(invoice.outstandingAmount || 0) > 0
+                              ? `<button data-action="pay" data-id="${invoice.invoiceId}">Pay</button>`
+                              : ''
+                          }
+                          <button class="ghost" data-action="view" data-id="${invoice.invoiceId}">Details</button>
+                          <button class="ghost" data-action="download" data-id="${invoice.invoiceId}">PDF</button>
+                        </td>
+                      </tr>`
+                    )
+                    .join('')
+                : '<tr><td colspan="9">No invoices for this player.</td></tr>'
+            }
+          </tbody>
+        </table>
+        <h4>Payment History</h4>
+        <table id="focusedPlayerPaymentTable">
+          <thead><tr><th>Date</th><th>Method</th><th>Amount</th><th>Allocated</th><th>Unallocated</th><th>Allocation Type</th><th>Reference</th><th>Receipt</th><th>Reallocate</th></tr></thead>
+          <tbody>
+            ${
+              focusedPlayerAccount.payments.length
+                ? focusedPlayerAccount.payments
+                    .map(
+                      (payment) => `<tr>
+                        <td>${formatDate(payment.receivedOn)}</td>
+                        <td>${escapeHtml(payment.method)}</td>
+                        <td>${formatMoney(payment.amount, payment.currency)}</td>
+                        <td>${formatMoney(payment.allocatedAmount, payment.currency)}</td>
+                        <td>${formatMoney(payment.unallocatedAmount, payment.currency)}</td>
+                        <td>${escapeHtml(
+                          payment.allocations?.length
+                            ? Array.from(new Set(payment.allocations.map((entry) => entry.invoiceTypeLabel || entry.invoiceType || 'Other Fee'))).join(', ')
+                            : payment.unallocatedAmount > 0
+                              ? 'Unallocated'
+                              : 'Auto'
+                        )}</td>
+                        <td>${escapeHtml(payment.paymentReference || payment.externalReference || '-')}</td>
+                        <td><button class="ghost" data-payment-receipt-id="${payment.paymentId}">Receipt PDF</button></td>
+                        <td><button class="ghost" data-payment-reallocate-id="${payment.paymentId}">Reallocate</button></td>
+                      </tr>`
+                    )
+                    .join('')
+                : '<tr><td colspan="9">No payments recorded for this player.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </article>
+    `
+    : `
+      <article class="card" id="focusedPlayerBillingCard">
+        <h3>Player Billing Account</h3>
+        <p>Open a player from <strong>Player Directory</strong> and click <strong>Billing</strong> to view payment history and action payments for that player.</p>
+      </article>
+    `;
+
   host.innerHTML = `
+    ${focusedAccountCard}
+    ${
+      focusedPlayerAccount
+        ? `<article class="card" id="paymentReallocationCard">
+            <h3>Payment Reallocation</h3>
+            <p>Select <strong>Reallocate</strong> on a payment row to move allocations to the correct invoice(s).</p>
+          </article>`
+        : ''
+    }
     <div class="cards three">
       <article class="card">
         <h3>Billing Jobs</h3>
@@ -858,7 +1008,7 @@ async function renderBillingView(host) {
           <label>Player
             <select name="playerCode" required>
               <option value="">Select player</option>
-              ${playerOptions(players)}
+              ${playerOptions(players, focusedPlayerCode || '')}
             </select>
           </label>
           <label>Amount<input name="amount" type="number" min="0.01" step="0.01" required /></label>
@@ -869,6 +1019,15 @@ async function renderBillingView(host) {
               <option value="card">Card</option>
               <option value="mobile_money">Mobile Money</option>
               <option value="other">Other</option>
+            </select>
+          </label>
+          <label>Allocate To
+            <select name="allocationType">
+              <option value="auto">Auto (oldest open invoices)</option>
+              <option value="registration">Registration Fee</option>
+              <option value="monthly_subscription">Monthly Training Fee</option>
+              <option value="activity_contribution">Activity Contribution</option>
+              <option value="other">Other Fee</option>
             </select>
           </label>
           <label>Payment Reference<input name="paymentReference" placeholder="Bank ref" /></label>
@@ -882,7 +1041,7 @@ async function renderBillingView(host) {
           <label>Player
             <select name="playerCode" required>
               <option value="">Select player</option>
-              ${playerOptions(players)}
+              ${playerOptions(players, focusedPlayerCode || '')}
             </select>
           </label>
           <label>Fee Name<input name="feeName" required placeholder="Tournament Contribution" /></label>
@@ -896,6 +1055,10 @@ async function renderBillingView(host) {
     <article class="card" id="billingInvoiceDetail">
       <h3>Invoice Detail</h3>
       <p>Select <strong>Details</strong> on an invoice row to view line items, payment allocations, and guardian contacts.</p>
+    </article>
+    <article class="card" id="invoiceDirectPaymentCard">
+      <h3>Pay Invoice Directly</h3>
+      <p>Select <strong>Pay</strong> on an invoice row to open a fast, pre-filled payment form for that invoice.</p>
     </article>
     <article class="card">
       <h3>Open Invoices</h3>
@@ -914,6 +1077,7 @@ async function renderBillingView(host) {
                     <td>${formatMoney(inv.total_amount, inv.currency)}</td>
                     <td>${formatMoney(inv.paid_amount, inv.currency)}</td>
                     <td class="mini-actions">
+                      <button data-action="pay" data-id="${inv.invoice_id}">Pay</button>
                       <button data-action="view" data-id="${inv.invoice_id}" class="ghost">Details</button>
                       <button data-action="download" data-id="${inv.invoice_id}" class="ghost">View PDF</button>
                       <button data-action="email" data-id="${inv.invoice_id}" class="ghost">Email</button>
@@ -971,6 +1135,220 @@ async function renderBillingView(host) {
     }
   });
 
+  document.querySelector('#clearFocusedPlayerBtn')?.addEventListener('click', async () => {
+    state.selectedBillingPlayerCode = null;
+    await loadView();
+  });
+
+  document.querySelector('#focusPlayerPaymentBtn')?.addEventListener('click', () => {
+    const paymentForm = document.querySelector('#paymentForm');
+    if (!(paymentForm instanceof HTMLFormElement)) {
+      return;
+    }
+    const outstandingAmount = Number(focusedPlayerAccount?.totals?.totalOutstanding || 0);
+    const amountInput = paymentForm.querySelector('input[name="amount"]');
+    if (amountInput instanceof HTMLInputElement && outstandingAmount > 0) {
+      amountInput.value = outstandingAmount.toFixed(2);
+    }
+    paymentForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
+  document.querySelectorAll('[data-payment-receipt-id]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const paymentId = button.dataset.paymentReceiptId;
+      if (!paymentId) {
+        return;
+      }
+      try {
+        await downloadProtectedFile(`/billing/payments/${paymentId}/receipt.pdf`, `receipt-${paymentId}.pdf`);
+        notify('Receipt downloaded.', 'success');
+      } catch (error) {
+        notify(error.message, 'error');
+      }
+    });
+  });
+
+  function renderPaymentReallocationForm(paymentId) {
+    const card = document.querySelector('#paymentReallocationCard');
+    if (!card || !focusedPlayerAccount) {
+      return;
+    }
+    const payment = focusedPlayerAccount.payments.find((entry) => entry.paymentId === paymentId);
+    if (!payment) {
+      card.innerHTML = '<p class="error">Payment not found for reallocation.</p>';
+      return;
+    }
+
+    const currentAllocations = new Map(
+      (payment.allocations || []).map((allocation) => [allocation.invoiceId, Number(allocation.allocatedAmount || 0)])
+    );
+    const draftAllocations = new Map(currentAllocations);
+    const invoiceMeta = focusedPlayerAccount.invoices.map((invoice) => {
+      const current = currentAllocations.get(invoice.invoiceId) || 0;
+      const maxAlloc = Number(invoice.outstandingAmount || 0) + current;
+      const typeCode = invoice.invoiceType || 'other';
+      const typeLabel = invoice.invoiceTypeLabel || 'Other Fee';
+      return { ...invoice, current, maxAlloc, typeCode, typeLabel };
+    });
+    const candidateInvoices = invoiceMeta.filter((invoice) => invoice.maxAlloc > 0.00001);
+    const typeEntries = Array.from(new Map(candidateInvoices.map((invoice) => [invoice.typeCode, invoice.typeLabel])).entries());
+
+    const resetCard = () => {
+      card.innerHTML = `
+        <h3>Payment Reallocation</h3>
+        <p>Select <strong>Reallocate</strong> on a payment row to move allocations to the correct invoice(s).</p>
+      `;
+    };
+
+    const renderReallocationForm = (selectedType = 'all') => {
+      const filteredInvoices =
+        selectedType === 'all' ? candidateInvoices : candidateInvoices.filter((invoice) => invoice.typeCode === selectedType);
+      const stagedTotal = Array.from(draftAllocations.values()).reduce((sum, amount) => sum + Number(amount || 0), 0);
+
+      const invoiceRows = filteredInvoices
+        .map((invoice) => {
+          const staged = draftAllocations.get(invoice.invoiceId) || 0;
+          return `<tr>
+            <td>${escapeHtml(invoice.invoiceNumber)}</td>
+            <td>${escapeHtml(invoice.typeLabel)}</td>
+            <td>${escapeHtml(invoice.status)}</td>
+            <td>${formatMoney(invoice.outstandingAmount, invoice.currency)}</td>
+            <td>${formatMoney(invoice.maxAlloc, invoice.currency)}</td>
+            <td>
+              <input
+                type="number"
+                min="0"
+                max="${invoice.maxAlloc.toFixed(2)}"
+                step="0.01"
+                value="${staged > 0 ? staged.toFixed(2) : ''}"
+                placeholder="0.00"
+                data-invoice-id="${invoice.invoiceId}"
+                data-max="${invoice.maxAlloc.toFixed(2)}"
+              />
+            </td>
+          </tr>`;
+        })
+        .join('');
+
+      card.innerHTML = `
+        <h3>Reallocate Payment</h3>
+        <p><strong>Payment Date:</strong> ${formatDate(payment.receivedOn)} | <strong>Amount:</strong> ${formatMoney(payment.amount, payment.currency)} | <strong>Current Allocated:</strong> ${formatMoney(payment.allocatedAmount, payment.currency)} | <strong>Unallocated:</strong> ${formatMoney(payment.unallocatedAmount, payment.currency)}</p>
+        <div class="toolbar">
+          <label class="inline-field">Invoice Type
+            <select id="reallocationTypeFilter">
+              <option value="all" ${selectedType === 'all' ? 'selected' : ''}>All Types</option>
+              ${typeEntries
+                .map(([typeCode, typeLabel]) => `<option value="${escapeHtml(typeCode)}" ${selectedType === typeCode ? 'selected' : ''}>${escapeHtml(typeLabel)}</option>`)
+                .join('')}
+            </select>
+          </label>
+          <p><strong>Staged Allocation:</strong> ${formatMoney(stagedTotal, payment.currency)} / ${formatMoney(payment.amount, payment.currency)}</p>
+        </div>
+        <form id="reallocatePaymentForm" class="stack">
+          <table>
+            <thead><tr><th>Invoice</th><th>Type</th><th>Status</th><th>Outstanding</th><th>Max Allowed</th><th>Allocate Now</th></tr></thead>
+            <tbody>
+              ${
+                invoiceRows ||
+                '<tr><td colspan="6">No invoices available for this type. Choose another invoice type.</td></tr>'
+              }
+            </tbody>
+          </table>
+          <div class="actions">
+            <button type="submit">Apply Reallocation</button>
+            <button type="button" class="ghost" id="cancelReallocationBtn">Cancel</button>
+          </div>
+        </form>
+      `;
+
+      card.querySelector('#reallocationTypeFilter')?.addEventListener('change', (event) => {
+        const nextType = String(event.currentTarget?.value || 'all');
+        renderReallocationForm(nextType);
+      });
+
+      card.querySelectorAll('input[data-invoice-id]').forEach((input) => {
+        input.addEventListener('input', () => {
+          const invoiceId = input.dataset.invoiceId;
+          const maxAllowed = Number(input.dataset.max || 0);
+          if (!invoiceId) {
+            return;
+          }
+          let value = Number(String(input.value || '').trim());
+          if (!Number.isFinite(value) || value < 0) {
+            value = 0;
+          }
+          if (value > maxAllowed) {
+            value = maxAllowed;
+            input.value = maxAllowed.toFixed(2);
+          }
+          if (value > 0) {
+            draftAllocations.set(invoiceId, Number(value.toFixed(2)));
+          } else {
+            draftAllocations.delete(invoiceId);
+          }
+        });
+      });
+
+      card.querySelector('#cancelReallocationBtn')?.addEventListener('click', () => {
+        resetCard();
+      });
+
+      card.querySelector('#reallocatePaymentForm')?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const allocations = Array.from(draftAllocations.entries())
+          .map(([invoiceId, amount]) => ({ invoiceId, amount: Number(amount) }))
+          .filter((row) => Number.isFinite(row.amount) && row.amount > 0);
+
+        const totalAllocation = allocations.reduce((sum, row) => sum + row.amount, 0);
+        if (totalAllocation - Number(payment.amount || 0) > 0.00001) {
+          notify('Total reallocation cannot exceed payment amount.', 'error');
+          return;
+        }
+
+        try {
+          const result = await api(`/billing/payments/${payment.paymentId}/reallocate`, {
+            method: 'POST',
+            body: { allocations }
+          });
+          notify(
+            `Payment reallocated. Allocated: ${formatMoney(result.data.allocatedAmount, payment.currency)}, Unallocated: ${formatMoney(result.data.unallocatedAmount, payment.currency)}`,
+            'success'
+          );
+          await loadView();
+        } catch (error) {
+          notify(error.message, 'error');
+        }
+      });
+    };
+
+    if (candidateInvoices.length === 0) {
+      card.innerHTML = `
+        <h3>Reallocate Payment</h3>
+        <p>This payment has no eligible invoices for allocation. Create invoice(s) first, then reallocate.</p>
+        <div class="actions">
+          <button type="button" class="ghost" id="cancelReallocationBtn">Close</button>
+        </div>
+      `;
+      card.querySelector('#cancelReallocationBtn')?.addEventListener('click', () => {
+        resetCard();
+      });
+      return;
+    }
+
+    renderReallocationForm('all');
+  }
+
+  document.querySelectorAll('[data-payment-reallocate-id]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const paymentId = button.dataset.paymentReallocateId;
+      if (!paymentId) {
+        return;
+      }
+      renderPaymentReallocationForm(paymentId);
+      document.querySelector('#paymentReallocationCard')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+
   document.querySelector('#paymentForm').addEventListener('submit', async (event) => {
     event.preventDefault();
     const formEl = event.currentTarget;
@@ -982,11 +1360,16 @@ async function renderBillingView(host) {
       playerCode: String(fd.get('playerCode') || ''),
       amount: Number(fd.get('amount') || 0),
       method: String(fd.get('method') || 'eft'),
+      allocationType: String(fd.get('allocationType') || 'auto'),
       paymentReference: optionalText(fd, 'paymentReference')
     };
     try {
       const res = await api('/billing/payments', { method: 'POST', body: payload });
-      notify(`Payment recorded. Allocated: ${res.data.allocatedAmount}`, 'success');
+      state.selectedBillingPlayerCode = payload.playerCode || state.selectedBillingPlayerCode;
+      notify(
+        `Payment recorded (${res.data.allocationType}). Allocated: ${res.data.allocatedAmount}, Unallocated: ${res.data.unallocatedAmount}`,
+        res.data.unallocatedAmount > 0 ? 'info' : 'success'
+      );
       formEl.reset();
       if (res?.data?.paymentId) {
         await downloadProtectedFile(
@@ -1020,6 +1403,7 @@ async function renderBillingView(host) {
         method: 'POST',
         body: payload
       });
+      state.selectedBillingPlayerCode = payload.playerCode || state.selectedBillingPlayerCode;
       notify(`Activity fee invoice created: ${res.data.invoiceNumber}`, 'success');
       formEl.reset();
       await loadView();
@@ -1028,9 +1412,9 @@ async function renderBillingView(host) {
     }
   });
 
-  document.querySelector('#billingInvoiceTable').addEventListener('click', async (event) => {
+  host.addEventListener('click', async (event) => {
     const button = event.target.closest('button[data-action]');
-    if (!button) {
+    if (!button || !host.contains(button)) {
       return;
     }
     const action = button.dataset.action;
@@ -1040,6 +1424,114 @@ async function renderBillingView(host) {
     }
 
     try {
+      if (action === 'pay') {
+        const detail = await api(`/billing/invoices/${invoiceId}`);
+        const d = detail.data;
+        const directPayCard = document.querySelector('#invoiceDirectPaymentCard');
+        if (!directPayCard) {
+          notify('Direct invoice payment panel unavailable. Reload page.', 'error');
+          return;
+        }
+
+        const outstandingAmount = Number(d.invoice.outstandingAmount || 0);
+        if (outstandingAmount <= 0) {
+          notify('This invoice is already fully paid.', 'info');
+          return;
+        }
+
+        const defaultPaymentRef = d.invoice.invoiceNumber;
+        const today = new Date().toISOString().slice(0, 10);
+
+        directPayCard.innerHTML = `
+          <h3>Pay Invoice ${escapeHtml(d.invoice.invoiceNumber)}</h3>
+          <p><strong>Player:</strong> ${escapeHtml(`${d.player.code} - ${d.player.name}`)}</p>
+          <p><strong>Type:</strong> ${escapeHtml(d.items?.[0]?.description || 'Invoice item')}</p>
+          <p><strong>Outstanding:</strong> ${formatMoney(outstandingAmount, d.invoice.currency)}</p>
+          <form id="directInvoicePaymentForm" class="stack">
+            <input type="hidden" name="invoiceId" value="${d.invoice.id}" />
+            <label>Amount to Pay
+              <input name="amount" type="number" min="0.01" max="${outstandingAmount.toFixed(2)}" step="0.01" value="${outstandingAmount.toFixed(2)}" required />
+            </label>
+            <label>Method
+              <select name="method">
+                <option value="eft">EFT</option>
+                <option value="cash">Cash</option>
+                <option value="card">Card</option>
+                <option value="mobile_money">Mobile Money</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label>Payment Date
+              <input name="receivedOn" type="date" value="${today}" />
+            </label>
+            <label>Payment Reference
+              <input name="paymentReference" value="${escapeHtml(defaultPaymentRef)}" />
+            </label>
+            <div class="actions">
+              <button type="submit">Pay This Invoice</button>
+              <button type="button" id="cancelDirectInvoicePaymentBtn" class="ghost">Cancel</button>
+            </div>
+          </form>
+        `;
+
+        directPayCard.querySelector('#cancelDirectInvoicePaymentBtn')?.addEventListener('click', () => {
+          directPayCard.innerHTML = `
+            <h3>Pay Invoice Directly</h3>
+            <p>Select <strong>Pay</strong> on an invoice row to open a fast, pre-filled payment form for that invoice.</p>
+          `;
+        });
+
+        directPayCard.querySelector('#directInvoicePaymentForm')?.addEventListener('submit', async (payEvent) => {
+          payEvent.preventDefault();
+          const formEl = payEvent.currentTarget;
+          if (!(formEl instanceof HTMLFormElement)) {
+            return;
+          }
+          const fd = new FormData(formEl);
+          const amount = Number(fd.get('amount') || 0);
+          const maxAmount = Number(outstandingAmount);
+          if (!Number.isFinite(amount) || amount <= 0) {
+            notify('Enter a valid payment amount.', 'error');
+            return;
+          }
+          if (amount - maxAmount > 0.00001) {
+            notify('Amount cannot exceed invoice outstanding.', 'error');
+            return;
+          }
+
+          const payload = {
+            amount,
+            method: String(fd.get('method') || 'eft'),
+            receivedOn: optionalText(fd, 'receivedOn'),
+            paymentReference: optionalText(fd, 'paymentReference')
+          };
+
+          try {
+            const payRes = await api(`/billing/invoices/${d.invoice.id}/pay`, {
+              method: 'POST',
+              body: payload
+            });
+            state.selectedBillingPlayerCode = d.player.code || state.selectedBillingPlayerCode;
+            notify(
+              `Invoice paid. Allocated: ${formatMoney(payRes.data.allocatedAmount, d.invoice.currency)} | Remaining: ${formatMoney(payRes.data.outstandingAfter, d.invoice.currency)}`,
+              'success'
+            );
+            if (payRes?.data?.paymentId) {
+              await downloadProtectedFile(
+                `/billing/payments/${payRes.data.paymentId}/receipt.pdf`,
+                `receipt-${payRes.data.paymentId}.pdf`
+              );
+            }
+            await loadView();
+          } catch (error) {
+            notify(error.message, 'error');
+          }
+        });
+
+        directPayCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+      }
+
       if (action === 'view') {
         const detail = await api(`/billing/invoices/${invoiceId}`);
         const d = detail.data;
@@ -2304,13 +2796,23 @@ async function renderOperationsView(host) {
         notify('Invalid amount.', 'error');
         return;
       }
+      const receivedOnInput = window.prompt('Receipt date (YYYY-MM-DD, optional)', new Date().toISOString().slice(0, 10));
+      const reference = String(window.prompt('Reference / transaction ID (optional)') || '').trim();
+      const proofUrl = String(window.prompt('Proof URL (optional)') || '').trim();
+      const notes = String(window.prompt('Notes (optional)') || '').trim();
       try {
         state.operationsStage = 'funding';
-        await api(`/operations/funding/sources/${sourceId}/receive`, {
+        const res = await api(`/operations/funding/sources/${sourceId}/receive`, {
           method: 'POST',
-          body: { amount }
+          body: {
+            amount,
+            receivedOn: receivedOnInput && receivedOnInput.trim() ? receivedOnInput.trim() : undefined,
+            reference: reference || undefined,
+            proofUrl: proofUrl || undefined,
+            notes: notes || undefined
+          }
         });
-        notify('Funding receipt recorded.', 'success');
+        notify(`Funding receipt recorded (${res?.data?.receiptId || 'receipt'}).`, 'success');
         await loadView();
       } catch (error) {
         notify(error.message, 'error');
@@ -2453,6 +2955,334 @@ async function renderOperationsView(host) {
         notify(error.message, 'error');
       }
     });
+  });
+}
+
+async function renderReportsView(host) {
+  const fromDate = state.reportsFrom || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+  const toDate = state.reportsTo || new Date().toISOString().slice(0, 10);
+  const params = new URLSearchParams({ from: fromDate, to: toDate, limit: '500' });
+  const reportRes = await api(`/reports/finance/transparency?${params.toString()}`);
+
+  const report = reportRes?.data || {};
+  const period = report.period || {};
+  const overview = report.overview || {};
+  const proof = report.proof || {};
+  const incomeRows = Array.isArray(report.incomeBreakdown) ? report.incomeBreakdown : [];
+  const coachingRows = report.expenditureBreakdown?.coachingAndStaff?.rows || [];
+  const equipmentRows = report.expenditureBreakdown?.trainingEquipment?.rows || [];
+  const otherExpenseRows = [
+    ...(report.expenditureBreakdown?.administration?.rows || []),
+    ...(report.expenditureBreakdown?.facilitiesAndTransport?.rows || []),
+    ...(report.expenditureBreakdown?.other?.rows || [])
+  ];
+  const coachingSubtotal = Number(report.expenditureBreakdown?.coachingAndStaff?.total || 0);
+  const equipmentSubtotal = Number(report.expenditureBreakdown?.trainingEquipment?.total || 0);
+  const otherSubtotal = Number(
+    Number(report.expenditureBreakdown?.administration?.total || 0) +
+      Number(report.expenditureBreakdown?.facilitiesAndTransport?.total || 0) +
+      Number(report.expenditureBreakdown?.other?.total || 0)
+  );
+  const budgetRows = Array.isArray(report.budgetAllocation) ? report.budgetAllocation : [];
+  const accountabilityRows = Array.isArray(report.accountability) ? report.accountability : [];
+  const maxBudget = Math.max(...budgetRows.map((row) => Number(row.amount || 0)), 1);
+  const totalIncome = Number(overview.totalIncome || 0);
+  const formatPeriodMonth = (value) => {
+    const dt = new Date(`${String(value)}-01`);
+    if (Number.isNaN(dt.getTime())) {
+      return String(value || '-');
+    }
+    return dt.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  };
+  const inferStaffName = (description) => {
+    const text = String(description || '').trim();
+    if (!text) return '-';
+    const salarySplit = text.split(' salary for ');
+    if (salarySplit.length > 1) return salarySplit[0];
+    return text;
+  };
+  const inferItemName = (description) => {
+    const text = String(description || '').trim();
+    const colonIndex = text.indexOf(':');
+    if (colonIndex > -1) {
+      return text.slice(colonIndex + 1).trim();
+    }
+    return text || '-';
+  };
+  const coverageClass = (value) => (value >= 80 ? 'ok' : value >= 50 ? 'warn' : 'danger');
+
+  host.innerHTML = `
+    <article class="card">
+      <h3>Dynaverse Football Academy - Financial Transparency Report</h3>
+      <p class="ops-note">Professional, parent-friendly, and audit-ready financial transparency statement.</p>
+      <form id="reportFilterForm" class="toolbar">
+        <label class="inline-field">From
+          <input type="date" name="from" value="${fromDate}" required />
+        </label>
+        <label class="inline-field">To
+          <input type="date" name="to" value="${toDate}" required />
+        </label>
+        <button type="submit">Load Report</button>
+        <button type="button" id="downloadReportPdfBtn" class="ghost">Download PDF</button>
+        <button type="button" id="downloadReportCsvBtn" class="ghost">Download CSV</button>
+      </form>
+      <small>Reporting period: <strong>${escapeHtml(period.from || fromDate)}</strong> to <strong>${escapeHtml(period.to || toDate)}</strong> (${period.days || 0} day(s))</small>
+    </article>
+
+    <article class="card">
+      <h3>1) Financial Overview (Executive Summary)</h3>
+      <div class="cards two">
+        <article class="card">
+          <h4>Funds In</h4>
+          <table>
+            <tbody>
+              <tr><th>Opening Balance</th><td>${formatMoney(overview.openingBalance || 0)}</td></tr>
+              <tr><th>Player Fees Collected</th><td>${formatMoney(overview.playerFeesCollected || 0)}</td></tr>
+              <tr><th>Donations Received</th><td>${formatMoney(overview.donationsReceived || 0)}</td></tr>
+              <tr><th>Other Income</th><td>${formatMoney(overview.otherIncome || 0)}</td></tr>
+              <tr><th>Total Funds Available</th><td><strong>${formatMoney(overview.totalFundsAvailable || 0)}</strong></td></tr>
+            </tbody>
+          </table>
+        </article>
+        <article class="card">
+          <h4>Funds Out</h4>
+          <table>
+            <tbody>
+              <tr><th>Coaching Salaries</th><td>${formatMoney(overview.coachingSalaries || 0)}</td></tr>
+              <tr><th>Training Equipment</th><td>${formatMoney(overview.trainingEquipment || 0)}</td></tr>
+              <tr><th>Administration</th><td>${formatMoney(overview.administration || 0)}</td></tr>
+              <tr><th>Facilities & Transport</th><td>${formatMoney(overview.facilitiesAndTransport || 0)}</td></tr>
+              <tr><th>Other Expenditure</th><td>${formatMoney(overview.otherExpenditure || 0)}</td></tr>
+              <tr><th>Total Expenditure</th><td><strong>${formatMoney(overview.totalExpenditure || 0)}</strong></td></tr>
+            </tbody>
+          </table>
+        </article>
+      </div>
+      <p><strong>Closing Balance:</strong> ${formatMoney(overview.closingBalance || 0)}</p>
+      <p><strong>Explanation:</strong> ${escapeHtml(overview.explanation || '-')}</p>
+    </article>
+
+    <article class="card">
+      <h3>2) Income Breakdown</h3>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Date</th><th>Source</th><th>Description</th><th>Amount</th></tr></thead>
+          <tbody>
+            ${
+              incomeRows.length
+                ? incomeRows
+                    .map(
+                      (row) => `<tr>
+                  <td>${formatDate(row.date)}</td>
+                  <td>${escapeHtml(row.source)}</td>
+                  <td>${escapeHtml(row.description)}</td>
+                  <td>${formatMoney(row.amount, row.currency)}</td>
+                </tr>`
+                    )
+                    .join('')
+                : '<tr><td colspan="4">No income entries found for this period.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+      <p><strong>Total Income:</strong> ${formatMoney(totalIncome)}</p>
+    </article>
+
+    <article class="card">
+      <h3>3) Expenditure Breakdown</h3>
+      <div class="cards two">
+        <article class="card">
+          <h4>Coaching & Staff</h4>
+          <table>
+            <thead><tr><th>Staff</th><th>Month</th><th>Amount</th></tr></thead>
+            <tbody>
+              ${
+                coachingRows.length
+                  ? coachingRows
+                      .map(
+                        (row) => `<tr>
+                    <td>${escapeHtml(inferStaffName(row.description))}</td>
+                    <td>${escapeHtml(formatPeriodMonth(String(row.date).slice(0, 7)))}</td>
+                    <td>${formatMoney(row.amount, row.currency)}</td>
+                  </tr>`
+                      )
+                      .join('')
+                  : '<tr><td colspan="3">No coaching/staff expenditure in this period.</td></tr>'
+              }
+            </tbody>
+          </table>
+          <p><strong>Subtotal:</strong> ${formatMoney(coachingSubtotal)}</p>
+        </article>
+        <article class="card">
+          <h4>Equipment Procurement</h4>
+          <table>
+            <thead><tr><th>Item</th><th>Description</th><th>Amount</th></tr></thead>
+            <tbody>
+              ${
+                equipmentRows.length
+                  ? equipmentRows
+                      .map(
+                        (row) => `<tr>
+                    <td>${escapeHtml(inferItemName(row.description))}</td>
+                    <td>${escapeHtml(row.description)}</td>
+                    <td>${formatMoney(row.amount, row.currency)}</td>
+                  </tr>`
+                      )
+                      .join('')
+                  : '<tr><td colspan="3">No equipment expenditure in this period.</td></tr>'
+              }
+            </tbody>
+          </table>
+          <p><strong>Subtotal:</strong> ${formatMoney(equipmentSubtotal)}</p>
+        </article>
+      </div>
+      ${
+        otherExpenseRows.length
+          ? `<article class="card">
+              <h4>Other Operational Expenditure</h4>
+              <table>
+                <thead><tr><th>Category</th><th>Description</th><th>Amount</th></tr></thead>
+                <tbody>
+                  ${otherExpenseRows
+                    .map(
+                      (row) => `<tr>
+                    <td>${escapeHtml((row.category || '').replaceAll('_', ' '))}</td>
+                    <td>${escapeHtml(row.description)}</td>
+                    <td>${formatMoney(row.amount, row.currency)}</td>
+                  </tr>`
+                    )
+                    .join('')}
+                </tbody>
+              </table>
+              <p><strong>Subtotal:</strong> ${formatMoney(otherSubtotal)}</p>
+            </article>`
+          : ''
+      }
+    </article>
+
+    <article class="card">
+      <h3>4) Budget Allocation View</h3>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Category</th><th>Amount</th><th>Percentage</th><th>Allocation</th></tr></thead>
+          <tbody>
+            ${
+              budgetRows.length
+                ? budgetRows
+                    .map(
+                      (row) => `<tr>
+                  <td>${escapeHtml(row.category)}</td>
+                  <td>${formatMoney(row.amount)}</td>
+                  <td>${Number(row.percentage || 0).toFixed(1)}%</td>
+                  <td><div class="report-bar-track compact"><div class="report-bar-fill allocation" style="width:${((Number(row.amount || 0) / maxBudget) * 100).toFixed(1)}%"></div></div></td>
+                </tr>`
+                    )
+                    .join('')
+                : '<tr><td colspan="4">No budget allocation data available.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="card">
+      <h3>5) Accountability / Proof Section</h3>
+      <div class="cards three">
+        <article class="card">
+          <p><strong>Funding receipts:</strong> ${proof.fundingReceiptsWithProof || 0}/${proof.fundingReceiptsCount || 0}</p>
+          <p><span class="status-pill ${coverageClass(Number(proof.fundingProofCoverage || 0))}">${Number(proof.fundingProofCoverage || 0).toFixed(1)}% verified</span></p>
+        </article>
+        <article class="card">
+          <p><strong>Payroll entries:</strong> ${proof.payrollEntriesWithProof || 0}/${proof.payrollEntriesCount || 0}</p>
+          <p><span class="status-pill ${coverageClass(Number(proof.payrollProofCoverage || 0))}">${Number(proof.payrollProofCoverage || 0).toFixed(1)}% verified</span></p>
+        </article>
+        <article class="card">
+          <p><strong>Expense rows:</strong> ${proof.expenseEntriesWithProof || 0}/${proof.expenseEntriesCount || 0}</p>
+          <p><span class="status-pill ${coverageClass(Number(proof.expenseProofCoverage || 0))}">${Number(proof.expenseProofCoverage || 0).toFixed(1)}% verified</span></p>
+        </article>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Transaction</th><th>Proof</th><th>Status</th></tr></thead>
+          <tbody>
+            ${
+              accountabilityRows.length
+                ? accountabilityRows
+                    .map(
+                      (row) => `<tr>
+                  <td>${escapeHtml(row.transaction)}</td>
+                  <td>${escapeHtml(row.proof || '-')}</td>
+                  <td><span class="status-pill ${row.status === 'verified' ? 'ok' : 'warn'}">${escapeHtml(row.status)}</span></td>
+                </tr>`
+                    )
+                    .join('')
+                : '<tr><td colspan="3">No accountability entries available.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="card">
+      <h3>6) Closing Statement</h3>
+      <p>${escapeHtml(report.closingStatement || 'This report was generated by the Dynaverse Football Academy MIS to ensure financial transparency in the management of academy funds.')}</p>
+    </article>
+  `;
+
+  host.querySelector('#reportFilterForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (!(form instanceof HTMLFormElement)) {
+      return;
+    }
+    const fd = new FormData(form);
+    const from = String(fd.get('from') || '').trim();
+    const to = String(fd.get('to') || '').trim();
+    if (!from || !to) {
+      notify('Both from and to dates are required.', 'error');
+      return;
+    }
+    if (from > to) {
+      notify('From date must be before or equal to To date.', 'error');
+      return;
+    }
+    state.reportsFrom = from;
+    state.reportsTo = to;
+    await loadView();
+  });
+
+  host.querySelector('#downloadReportCsvBtn')?.addEventListener('click', async () => {
+    try {
+      const csvParams = new URLSearchParams({
+        from: state.reportsFrom || fromDate,
+        to: state.reportsTo || toDate,
+        limit: '1000'
+      });
+      await downloadProtectedFile(
+        `/reports/finance/transparency.csv?${csvParams.toString()}`,
+        `finance-transparency-${state.reportsFrom || fromDate}-to-${state.reportsTo || toDate}.csv`
+      );
+      notify('Financial transparency report downloaded.', 'success');
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+  });
+
+  host.querySelector('#downloadReportPdfBtn')?.addEventListener('click', async () => {
+    try {
+      const pdfParams = new URLSearchParams({
+        from: state.reportsFrom || fromDate,
+        to: state.reportsTo || toDate,
+        limit: '1000'
+      });
+      await downloadProtectedFile(
+        `/reports/finance/transparency.pdf?${pdfParams.toString()}`,
+        `finance-transparency-${state.reportsFrom || fromDate}-to-${state.reportsTo || toDate}.pdf`
+      );
+      notify('Financial transparency PDF downloaded.', 'success');
+    } catch (error) {
+      notify(error.message, 'error');
+    }
   });
 }
 

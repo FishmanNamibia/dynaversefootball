@@ -189,7 +189,10 @@ operationsRouter.post('/funding/sources', async (req, res, next) => {
 operationsRouter.post('/funding/sources/:sourceId/receive', async (req, res, next) => {
   try {
     const payload = ReceiveFundingSchema.parse(req.body ?? {});
-    const data = await receiveFunding(req.params.sourceId, payload);
+    const data = await receiveFunding(req.params.sourceId, {
+      ...payload,
+      recordedBy: payload.recordedBy ?? req.authUser?.username
+    });
     res.json({ status: 'ok', data });
   } catch (error) {
     next(error);

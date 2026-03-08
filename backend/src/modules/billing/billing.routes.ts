@@ -4,10 +4,13 @@ import {
   generateMonthlyInvoices,
   getInvoiceDetails,
   getInvoicePdfBuffer,
+  getPlayerBillingAccount,
   getReceiptPdfBuffer,
   listInvoices,
   listOutstandingMonthlyFees,
   markOverdueInvoices,
+  payInvoiceDirectly,
+  reallocatePayment,
   recordPayment,
   sendInvoiceToGuardian,
   sendOutstandingMonthlyFeeReminders
@@ -15,6 +18,8 @@ import {
 import {
   CreateCustomFeeInvoiceSchema,
   GenerateMonthlyInvoicesSchema,
+  PayInvoiceSchema,
+  ReallocatePaymentSchema,
   RecordPaymentSchema,
   SendInvoiceSchema,
   SendOutstandingRemindersSchema
@@ -67,11 +72,41 @@ billingRouter.post('/invoices/:invoiceId/send', async (req, res, next) => {
   }
 });
 
+billingRouter.post('/invoices/:invoiceId/pay', async (req, res, next) => {
+  try {
+    const payload = PayInvoiceSchema.parse(req.body ?? {});
+    const data = await payInvoiceDirectly(req.params.invoiceId, payload);
+    res.status(201).json({ status: 'ok', data });
+  } catch (error) {
+    next(error);
+  }
+});
+
+billingRouter.get('/players/:playerCode/account', async (req, res, next) => {
+  try {
+    const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : 50;
+    const data = await getPlayerBillingAccount(req.params.playerCode, Number.isFinite(limit) ? limit : 50);
+    res.json({ status: 'ok', data });
+  } catch (error) {
+    next(error);
+  }
+});
+
 billingRouter.post('/payments', async (req, res, next) => {
   try {
     const payload = RecordPaymentSchema.parse(req.body);
     const data = await recordPayment(payload);
     res.status(201).json({ status: 'ok', data });
+  } catch (error) {
+    next(error);
+  }
+});
+
+billingRouter.post('/payments/:paymentId/reallocate', async (req, res, next) => {
+  try {
+    const payload = ReallocatePaymentSchema.parse(req.body ?? {});
+    const data = await reallocatePayment(req.params.paymentId, payload);
+    res.json({ status: 'ok', data });
   } catch (error) {
     next(error);
   }

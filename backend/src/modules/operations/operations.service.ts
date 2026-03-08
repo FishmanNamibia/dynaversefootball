@@ -3,7 +3,7 @@ import dayjs from 'dayjs';
 import { pool } from '../../db/pool.js';
 import { withTransaction } from '../../db/tx.js';
 import { HttpError } from '../../utils/httpError.js';
-import { getAcademyProfileSettings } from '../settings/settings.store.js';
+import { appendAuditLog, getAcademyProfileSettings } from '../settings/settings.store.js';
 import { buildSalarySlipPdf } from './operations.documents.js';
 import type {
   CreateFundingSourceInput,
@@ -145,6 +145,12 @@ type StaffPaymentSlipRow = {
   funding_source_name: string | null;
 };
 
+type FundingReceiptRow = {
+  id: string;
+  received_amount: string;
+  received_on: string;
+};
+
 type DashboardMetricsRow = {
   low_stock_items: number;
   open_needs: number;
@@ -181,6 +187,14 @@ function makeCode(prefix: string): string {
   const year = new Date().getFullYear();
   const suffix = crypto.randomBytes(2).toString('hex').toUpperCase();
   return `${prefix}-${year}-${suffix}`;
+}
+
+async function safeAppendAudit(actor: string, action: string, section: string, details: unknown): Promise<void> {
+  try {
+    await appendAuditLog(actor, action, section, details);
+  } catch {
+    // Keep business flow successful even if audit log write fails.
+  }
 }
 
 function mapInventoryItem(row: InventoryItemRow) {
@@ -307,6 +321,21 @@ export async function ensureOperationsInfrastructure(): Promise<void> {
       `);
 
       await pool.query(`
+        CREATE TABLE IF NOT EXISTS funding_receipts (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          funding_source_id UUID NOT NULL REFERENCES funding_sources(id) ON DELETE CASCADE,
+          received_amount NUMERIC(12, 2) NOT NULL,
+          currency CHAR(3) NOT NULL DEFAULT 'NAD',
+          received_on DATE NOT NULL DEFAULT CURRENT_DATE,
+          reference TEXT,
+          proof_url TEXT,
+          notes TEXT,
+          recorded_by TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS club_needs (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           need_code TEXT NOT NULL UNIQUE,
@@ -401,6 +430,7 @@ export async function ensureOperationsInfrastructure(): Promise<void> {
 
       await pool.query('CREATE INDEX IF NOT EXISTS idx_inventory_items_stock ON inventory_items(stock_on_hand, minimum_stock_level)');
       await pool.query('CREATE INDEX IF NOT EXISTS idx_stock_movements_item_date ON stock_movements(inventory_item_id, movement_date DESC)');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_funding_receipts_source_date ON funding_receipts(funding_source_id, received_on DESC)');
       await pool.query('CREATE INDEX IF NOT EXISTS idx_club_needs_status_priority ON club_needs(status, priority, required_by)');
       await pool.query('CREATE INDEX IF NOT EXISTS idx_procurement_requests_status ON procurement_requests(status, expected_delivery_date)');
       await pool.query('CREATE INDEX IF NOT EXISTS idx_staff_payments_period_status ON staff_payments(period_month, status)');
@@ -410,6 +440,35 @@ export async function ensureOperationsInfrastructure(): Promise<void> {
           INSERT INTO funding_sources (source_code, name, source_type, committed_amount, received_amount, currency)
           VALUES ('FUND-CORE', 'Core Academy Fund', 'internal', 0, 0, 'NAD')
           ON CONFLICT (source_code) DO NOTHING
+        `
+      );
+
+      await pool.query(
+        `
+          INSERT INTO funding_receipts (
+            funding_source_id,
+            received_amount,
+            currency,
+            received_on,
+            reference,
+            notes,
+            recorded_by
+          )
+          SELECT
+            fs.id,
+            fs.received_amount,
+            fs.currency,
+            CURRENT_DATE,
+            'OPENING-BALANCE',
+            'Opening balance migrated into funding receipt ledger',
+            'system'
+          FROM funding_sources fs
+          WHERE fs.received_amount > 0
+            AND NOT EXISTS (
+              SELECT 1
+              FROM funding_receipts fr
+              WHERE fr.funding_source_id = fs.id
+            )
         `
       );
     })().catch((error) => {
@@ -1308,76 +1367,164 @@ export async function createFundingSource(
   input: CreateFundingSourceInput
 ): Promise<{ id: string; sourceCode: string }> {
   await ensureOperationsInfrastructure();
+  const actor = 'admin';
   const sourceCode = cleanOptional(input.sourceCode) ?? makeCode('FUND');
-  const result = await pool.query<{ id: string; source_code: string }>(
-    `
-      INSERT INTO funding_sources (
-        source_code,
-        name,
-        source_type,
-        contact_name,
-        phone,
-        email,
-        committed_amount,
-        received_amount,
-        currency,
-        notes
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      RETURNING id, source_code
-    `,
-    [
-      sourceCode,
-      input.name,
-      input.sourceType,
-      cleanOptional(input.contactName),
-      cleanOptional(input.phone),
-      cleanOptional(input.email),
-      input.committedAmount,
-      input.receivedAmount,
-      input.currency.toUpperCase(),
-      cleanOptional(input.notes)
-    ]
-  );
-  const row = result.rows[0];
-  if (!row) {
-    throw new HttpError(500, 'Failed to create funding source');
-  }
-  return {
-    id: row.id,
-    sourceCode: row.source_code
-  };
+  const created = await withTransaction(async (client) => {
+    const result = await client.query<{ id: string; source_code: string; currency: string }>(
+      `
+        INSERT INTO funding_sources (
+          source_code,
+          name,
+          source_type,
+          contact_name,
+          phone,
+          email,
+          committed_amount,
+          received_amount,
+          currency,
+          notes
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING id, source_code, currency
+      `,
+      [
+        sourceCode,
+        input.name,
+        input.sourceType,
+        cleanOptional(input.contactName),
+        cleanOptional(input.phone),
+        cleanOptional(input.email),
+        input.committedAmount,
+        input.receivedAmount,
+        input.currency.toUpperCase(),
+        cleanOptional(input.notes)
+      ]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new HttpError(500, 'Failed to create funding source');
+    }
+
+    if (input.receivedAmount > 0) {
+      await client.query(
+        `
+          INSERT INTO funding_receipts (
+            funding_source_id,
+            received_amount,
+            currency,
+            received_on,
+            reference,
+            notes,
+            recorded_by
+          )
+          VALUES ($1, $2, $3, CURRENT_DATE, 'INITIAL-SETUP', $4, $5)
+        `,
+        [
+          row.id,
+          input.receivedAmount,
+          row.currency,
+          cleanOptional(input.notes) ?? 'Initial amount captured when source was created',
+          actor
+        ]
+      );
+    }
+
+    return {
+      id: row.id,
+      sourceCode: row.source_code
+    };
+  });
+
+  await safeAppendAudit(actor, 'operations.funding_source.created', 'operations.funding', {
+    sourceId: created.id,
+    sourceCode: created.sourceCode,
+    sourceType: input.sourceType,
+    committedAmount: input.committedAmount,
+    receivedAmount: input.receivedAmount
+  });
+
+  return created;
 }
 
 export async function receiveFunding(
   sourceId: string,
   input: ReceiveFundingInput
-): Promise<{ sourceId: string; receivedAmount: number }> {
+): Promise<{ sourceId: string; receivedAmount: number; receiptId: string; receiptDate: string }> {
   await ensureOperationsInfrastructure();
-  const result = await pool.query<{ id: string; received_amount: string }>(
-    `
-      UPDATE funding_sources
-      SET
-        received_amount = received_amount + $2,
-        notes = CASE
-          WHEN $3::text IS NULL OR TRIM($3::text) = '' THEN notes
-          WHEN notes IS NULL OR notes = '' THEN $3
-          ELSE notes || E'\n' || $3
-        END,
-        updated_at = NOW()
-      WHERE id = $1
-      RETURNING id, received_amount::text
-    `,
-    [sourceId, input.amount, cleanOptional(input.notes)]
-  );
-  const row = result.rows[0];
-  if (!row) {
-    throw new HttpError(404, 'Funding source not found');
-  }
-  return {
-    sourceId: row.id,
-    receivedAmount: Number(row.received_amount)
-  };
+  const actor = nowActor(input.recordedBy);
+  const receiptDate = input.receivedOn ?? dayjs().format('YYYY-MM-DD');
+  const result = await withTransaction(async (client) => {
+    const updated = await client.query<{ id: string; received_amount: string; currency: string }>(
+      `
+        UPDATE funding_sources
+        SET
+          received_amount = received_amount + $2,
+          notes = CASE
+            WHEN $3::text IS NULL OR TRIM($3::text) = '' THEN notes
+            WHEN notes IS NULL OR notes = '' THEN $3
+            ELSE notes || E'\n' || $3
+          END,
+          updated_at = NOW()
+        WHERE id = $1
+        RETURNING id, received_amount::text, currency
+      `,
+      [sourceId, input.amount, cleanOptional(input.notes)]
+    );
+    const row = updated.rows[0];
+    if (!row) {
+      throw new HttpError(404, 'Funding source not found');
+    }
+
+    const receipt = await client.query<FundingReceiptRow>(
+      `
+        INSERT INTO funding_receipts (
+          funding_source_id,
+          received_amount,
+          currency,
+          received_on,
+          reference,
+          proof_url,
+          notes,
+          recorded_by
+        )
+        VALUES ($1, $2, $3, COALESCE($4::date, CURRENT_DATE), $5, $6, $7, $8)
+        RETURNING id, received_amount::text, received_on::text
+      `,
+      [
+        sourceId,
+        input.amount,
+        row.currency,
+        input.receivedOn ?? null,
+        cleanOptional(input.reference),
+        cleanOptional(input.proofUrl),
+        cleanOptional(input.notes),
+        actor
+      ]
+    );
+
+    const receiptRow = receipt.rows[0];
+    if (!receiptRow) {
+      throw new HttpError(500, 'Failed to record funding receipt');
+    }
+
+    return {
+      sourceId: row.id,
+      receivedAmount: Number(row.received_amount),
+      receiptId: receiptRow.id,
+      receiptDate: receiptRow.received_on
+    };
+  });
+
+  await safeAppendAudit(actor, 'operations.funding.receipt_recorded', 'operations.funding', {
+    sourceId: result.sourceId,
+    receiptId: result.receiptId,
+    amount: input.amount,
+    receiptDate,
+    reference: cleanOptional(input.reference),
+    hasProof: Boolean(cleanOptional(input.proofUrl))
+  });
+
+  return result;
 }
 
 export async function listStaffMembers(

@@ -345,6 +345,19 @@ CREATE TABLE funding_sources (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE funding_receipts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  funding_source_id UUID NOT NULL REFERENCES funding_sources(id) ON DELETE CASCADE,
+  received_amount NUMERIC(12, 2) NOT NULL,
+  currency CHAR(3) NOT NULL DEFAULT 'NAD',
+  received_on DATE NOT NULL DEFAULT CURRENT_DATE,
+  reference TEXT,
+  proof_url TEXT,
+  notes TEXT,
+  recorded_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE club_needs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   need_code TEXT NOT NULL UNIQUE,
@@ -428,6 +441,35 @@ CREATE TABLE staff_payments (
   UNIQUE(staff_member_id, period_month)
 );
 
+CREATE TABLE financial_income_entries (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  entry_date DATE NOT NULL,
+  source_id UUID REFERENCES funding_sources(id) ON DELETE SET NULL,
+  source TEXT NOT NULL,
+  income_type TEXT NOT NULL DEFAULT 'other',
+  description TEXT,
+  amount NUMERIC(12, 2) NOT NULL,
+  currency CHAR(3) NOT NULL DEFAULT 'NAD',
+  reference TEXT,
+  proof_url TEXT,
+  recorded_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE financial_expense_entries (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  entry_date DATE NOT NULL,
+  source_id UUID REFERENCES funding_sources(id) ON DELETE SET NULL,
+  category TEXT NOT NULL DEFAULT 'other',
+  description TEXT NOT NULL,
+  amount NUMERIC(12, 2) NOT NULL,
+  currency CHAR(3) NOT NULL DEFAULT 'NAD',
+  reference TEXT,
+  proof_url TEXT,
+  recorded_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE system_settings (
   key TEXT PRIMARY KEY,
   value JSONB NOT NULL,
@@ -460,9 +502,14 @@ CREATE INDEX idx_enrollments_player_status ON enrollments(player_id, status);
 CREATE INDEX idx_system_audit_logs_created_at ON system_audit_logs(created_at DESC);
 CREATE INDEX idx_inventory_items_stock ON inventory_items(stock_on_hand, minimum_stock_level);
 CREATE INDEX idx_stock_movements_item_date ON stock_movements(inventory_item_id, movement_date DESC);
+CREATE INDEX idx_funding_receipts_source_date ON funding_receipts(funding_source_id, received_on DESC);
 CREATE INDEX idx_club_needs_status_priority ON club_needs(status, priority, required_by);
 CREATE INDEX idx_procurement_requests_status ON procurement_requests(status, expected_delivery_date);
 CREATE INDEX idx_staff_payments_period_status ON staff_payments(period_month, status);
+CREATE INDEX idx_fin_income_date ON financial_income_entries(entry_date DESC);
+CREATE INDEX idx_fin_income_source ON financial_income_entries(source_id, entry_date DESC);
+CREATE INDEX idx_fin_expense_date ON financial_expense_entries(entry_date DESC);
+CREATE INDEX idx_fin_expense_source ON financial_expense_entries(source_id, entry_date DESC);
 
 -- Baseline fee plans from your registration form.
 INSERT INTO fee_plans (code, name, amount, currency, billing_frequency)
